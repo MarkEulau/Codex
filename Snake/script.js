@@ -7,6 +7,7 @@ const episodesEl = document.getElementById('episodes');
 const avgScoreEl = document.getElementById('avg-score');
 const epsilonEl = document.getElementById('epsilon');
 const performanceChartCanvas = document.getElementById('performance-chart');
+const resetLearningButton = document.getElementById('reset-learning');
 
 const boardCount = 16;
 const gridCellsPerSide = 20;
@@ -17,6 +18,9 @@ const bestScoreKey = 'snake-best-score';
 const qTableKey = 'snake-rl-qtable-v1';
 const episodesKey = 'snake-rl-episodes-v1';
 const epsilonKey = 'snake-rl-epsilon-v1';
+const scoreHistoryKey = 'snake-rl-score-history-v1';
+const avgScoreHistoryKey = 'snake-rl-avg-score-history-v1';
+const bestScoreHistoryKey = 'snake-rl-best-score-history-v1';
 
 const directions = [
   { x: 0, y: -1 },
@@ -47,9 +51,19 @@ let botEnabled = true;
 
 const boards = [];
 let loopId;
-const scoreHistory = [];
-const avgScoreHistory = [];
-const bestScoreHistory = [];
+const scoreHistory = JSON.parse(localStorage.getItem(scoreHistoryKey) || '[]');
+const avgScoreHistory = JSON.parse(localStorage.getItem(avgScoreHistoryKey) || '[]');
+const bestScoreHistory = JSON.parse(localStorage.getItem(bestScoreHistoryKey) || '[]');
+
+if (scoreHistory.length > maxHistoryPoints) {
+  scoreHistory.splice(0, scoreHistory.length - maxHistoryPoints);
+}
+if (avgScoreHistory.length > maxHistoryPoints) {
+  avgScoreHistory.splice(0, avgScoreHistory.length - maxHistoryPoints);
+}
+if (bestScoreHistory.length > maxHistoryPoints) {
+  bestScoreHistory.splice(0, bestScoreHistory.length - maxHistoryPoints);
+}
 
 function pushHistoryPoint(series, point) {
   series.push(point);
@@ -58,7 +72,15 @@ function pushHistoryPoint(series, point) {
   }
 }
 
-function drawLineChart(canvas, title, seriesConfig, yMinOverride, yMaxOverride) {
+function drawLineChart(
+  canvas,
+  title,
+  seriesConfig,
+  yMinOverride,
+  yMaxOverride,
+  xMinOverride,
+  xMaxOverride
+) {
   const ctx = canvas.getContext('2d');
   const width = canvas.width;
   const height = canvas.height;
@@ -80,8 +102,8 @@ function drawLineChart(canvas, title, seriesConfig, yMinOverride, yMaxOverride) 
   const xs = allPoints.map((point) => point.x);
   const ys = allPoints.map((point) => point.y);
 
-  const minX = Math.min(...xs);
-  const maxX = Math.max(...xs);
+  const minX = xMinOverride ?? Math.min(...xs);
+  const maxX = xMaxOverride ?? Math.max(...xs);
   const minY = yMinOverride ?? Math.min(...ys);
   const maxY = yMaxOverride ?? Math.max(...ys);
 
@@ -142,13 +164,18 @@ function drawLineChart(canvas, title, seriesConfig, yMinOverride, yMaxOverride) 
 }
 
 function updateCharts() {
+  const maxEpisode = Math.max(1, totalEpisodes);
   drawLineChart(
     performanceChartCanvas,
     'X: runs (episodes), Y: score metrics',
     [
       { label: 'Episode score', color: '#22d3ee', points: scoreHistory },
       { label: 'Avg(25)', color: '#f59e0b', points: avgScoreHistory },
-    ]
+    ],
+    undefined,
+    undefined,
+    0,
+    maxEpisode
   );
 }
 
@@ -494,6 +521,36 @@ function tick() {
 
 function persistQTable() {
   localStorage.setItem(qTableKey, JSON.stringify(qTable));
+  localStorage.setItem(scoreHistoryKey, JSON.stringify(scoreHistory));
+  localStorage.setItem(avgScoreHistoryKey, JSON.stringify(avgScoreHistory));
+  localStorage.setItem(bestScoreHistoryKey, JSON.stringify(bestScoreHistory));
+}
+
+function resetLearningState() {
+  qTable = {};
+  totalEpisodes = 0;
+  bestScore = 0;
+  recentScores = [];
+  learning.epsilon = 1;
+
+  scoreHistory.length = 0;
+  avgScoreHistory.length = 0;
+  bestScoreHistory.length = 0;
+
+  localStorage.removeItem(qTableKey);
+  localStorage.removeItem(episodesKey);
+  localStorage.removeItem(bestScoreKey);
+  localStorage.removeItem(epsilonKey);
+  localStorage.removeItem(scoreHistoryKey);
+  localStorage.removeItem(avgScoreHistoryKey);
+  localStorage.removeItem(bestScoreHistoryKey);
+
+  boards.forEach((board) => {
+    resetBoard(board);
+  });
+
+  updateHud();
+  updateCharts();
 }
 
 function initBoards() {
@@ -581,6 +638,12 @@ window.addEventListener('keydown', (event) => {
 
   event.preventDefault();
 });
+
+if (resetLearningButton) {
+  resetLearningButton.addEventListener('click', () => {
+    resetLearningState();
+  });
+}
 
 initBoards();
 boardResizeObserver.observe(gridRoot);
