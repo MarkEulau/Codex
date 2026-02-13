@@ -1,4 +1,5 @@
 const gridRoot = document.getElementById('games-grid');
+const appRoot = document.querySelector('.app');
 const bestEl = document.getElementById('best');
 const statusEl = document.getElementById('status');
 const episodesEl = document.getElementById('episodes');
