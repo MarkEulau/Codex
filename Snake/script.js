@@ -7,7 +7,6 @@ const episodesEl = document.getElementById('episodes');
 const avgScoreEl = document.getElementById('avg-score');
 const epsilonEl = document.getElementById('epsilon');
 const performanceChartCanvas = document.getElementById('performance-chart');
-const epsilonChartCanvas = document.getElementById('epsilon-chart');
 
 const boardCount = 9;
 const gridCellsPerSide = 20;
@@ -51,7 +50,6 @@ let loopId;
 const scoreHistory = [];
 const avgScoreHistory = [];
 const bestScoreHistory = [];
-const epsilonHistory = [];
 
 function pushHistoryPoint(series, point) {
   series.push(point);
@@ -151,14 +149,6 @@ function updateCharts() {
       { label: 'Episode score', color: '#22d3ee', points: scoreHistory },
       { label: 'Avg(25)', color: '#f59e0b', points: avgScoreHistory },
     ]
-  );
-
-  drawLineChart(
-    epsilonChartCanvas,
-    'X: runs (episodes), Y: epsilon',
-    [{ label: 'ε', color: '#f43f5e', points: epsilonHistory }],
-    learning.epsilonMin,
-    1
   );
 }
 
@@ -306,7 +296,6 @@ function completeEpisode(board) {
   pushHistoryPoint(scoreHistory, { x: totalEpisodes, y: board.score });
   pushHistoryPoint(avgScoreHistory, { x: totalEpisodes, y: average });
   pushHistoryPoint(bestScoreHistory, { x: totalEpisodes, y: bestScore });
-  pushHistoryPoint(epsilonHistory, { x: totalEpisodes, y: learning.epsilon });
   updateCharts();
 
   resetBoard(board);
@@ -392,7 +381,6 @@ function resizeChartCanvas(canvas) {
 
 function resizeCharts() {
   resizeChartCanvas(performanceChartCanvas);
-  resizeChartCanvas(epsilonChartCanvas);
   updateCharts();
 }
 
