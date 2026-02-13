@@ -1,15 +1,19 @@
 const gridRoot = document.getElementById('games-grid');
+const appRoot = document.querySelector('.app');
 const bestEl = document.getElementById('best');
 const statusEl = document.getElementById('status');
 const episodesEl = document.getElementById('episodes');
 const avgScoreEl = document.getElementById('avg-score');
 const epsilonEl = document.getElementById('epsilon');
+const performanceChartCanvas = document.getElementById('performance-chart');
+const epsilonChartCanvas = document.getElementById('epsilon-chart');
 
 const boardCount = 9;
 const gridCellsPerSide = 20;
-const boardPx = 180;
-const cellPx = boardPx / gridCellsPerSide;
 const tickMs = 85;
+const maxHistoryPoints = 300;
+const performanceChartHeight = 260;
+const epsilonChartHeight = 200;
 
 const bestScoreKey = 'snake-best-score';
 const qTableKey = 'snake-rl-qtable-v1';
@@ -45,6 +49,140 @@ let botEnabled = true;
 
 const boards = [];
 let loopId;
+const scoreHistory = [];
+const avgScoreHistory = [];
+const bestScoreHistory = [];
+const epsilonHistory = [];
+
+function pushHistoryPoint(series, point) {
+  series.push(point);
+  if (series.length > maxHistoryPoints) {
+    series.shift();
+  }
+}
+
+function drawLineChart(canvas, title, seriesConfig, yMinOverride, yMaxOverride) {
+  const ctx = canvas.getContext('2d');
+  const width = canvas.width;
+  const height = canvas.height;
+  const pad = { top: 18, right: 14, bottom: 26, left: 42 };
+  const chartWidth = width - pad.left - pad.right;
+  const chartHeight = height - pad.top - pad.bottom;
+
+  ctx.fillStyle = '#0b1020';
+  ctx.fillRect(0, 0, width, height);
+
+  const allPoints = seriesConfig.flatMap((series) => series.points);
+  if (!allPoints.length) {
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '13px Inter, system-ui, sans-serif';
+    ctx.fillText('No learning data yet...', 12, 24);
+    return;
+  }
+
+  const xs = allPoints.map((point) => point.x);
+  const ys = allPoints.map((point) => point.y);
+
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = yMinOverride ?? Math.min(...ys);
+  const maxY = yMaxOverride ?? Math.max(...ys);
+
+  const xRange = Math.max(1, maxX - minX);
+  const yRange = Math.max(1e-6, maxY - minY);
+
+  ctx.strokeStyle = 'rgba(148, 163, 184, 0.3)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(pad.left, pad.top);
+  ctx.lineTo(pad.left, pad.top + chartHeight);
+  ctx.lineTo(pad.left + chartWidth, pad.top + chartHeight);
+  ctx.stroke();
+
+  ctx.fillStyle = '#94a3b8';
+  ctx.font = '11px Inter, system-ui, sans-serif';
+  ctx.fillText(`${Math.round(minY * 100) / 100}`, 6, pad.top + chartHeight);
+  ctx.fillText(`${Math.round(maxY * 100) / 100}`, 6, pad.top + 9);
+  ctx.fillText(`${Math.round(minX)}`, pad.left - 2, height - 6);
+  ctx.fillText(`${Math.round(maxX)}`, pad.left + chartWidth - 22, height - 6);
+
+  seriesConfig.forEach((series) => {
+    if (!series.points.length) {
+      return;
+    }
+
+    ctx.strokeStyle = series.color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+
+    series.points.forEach((point, index) => {
+      const px = pad.left + ((point.x - minX) / xRange) * chartWidth;
+      const py = pad.top + chartHeight - ((point.y - minY) / yRange) * chartHeight;
+      if (index === 0) {
+        ctx.moveTo(px, py);
+      } else {
+        ctx.lineTo(px, py);
+      }
+    });
+
+    ctx.stroke();
+  });
+
+  ctx.font = '12px Inter, system-ui, sans-serif';
+  ctx.fillStyle = '#e2e8f0';
+  ctx.fillText(title, pad.left, 12);
+
+  let legendX = pad.left;
+  const legendY = height - 8;
+  seriesConfig.forEach((series) => {
+    ctx.fillStyle = series.color;
+    ctx.fillRect(legendX, legendY - 8, 10, 4);
+    legendX += 14;
+    ctx.fillStyle = '#cbd5e1';
+    ctx.fillText(series.label, legendX, legendY);
+    legendX += ctx.measureText(series.label).width + 18;
+  });
+}
+
+function updateCharts() {
+  drawLineChart(
+    performanceChartCanvas,
+    'X: runs (episodes), Y: score metrics',
+    [
+      { label: 'Episode score', color: '#22d3ee', points: scoreHistory },
+      { label: 'Avg(25)', color: '#f59e0b', points: avgScoreHistory },
+      { label: 'Best', color: '#10b981', points: bestScoreHistory },
+    ]
+  );
+
+  drawLineChart(
+    epsilonChartCanvas,
+    'X: runs (episodes), Y: epsilon',
+    [{ label: 'ε', color: '#f43f5e', points: epsilonHistory }],
+    learning.epsilonMin,
+    1
+  );
+}
+
+function resizeChartCanvas(canvas, cssHeight) {
+  const width = Math.max(1, Math.floor(canvas.getBoundingClientRect().width));
+  if (canvas.width === width && canvas.height === cssHeight) {
+    return false;
+  }
+
+  canvas.width = width;
+  canvas.height = cssHeight;
+  return true;
+}
+
+function resizeCharts() {
+  const performanceResized = resizeChartCanvas(performanceChartCanvas, performanceChartHeight);
+  const epsilonResized = resizeChartCanvas(epsilonChartCanvas, epsilonChartHeight);
+
+  if (performanceResized || epsilonResized) {
+    updateCharts();
+  }
+}
 
 function rotateDirection(currentIndex, action) {
   const turn = actionTurns[action];
@@ -182,6 +320,17 @@ function completeEpisode(board) {
   localStorage.setItem(episodesKey, String(totalEpisodes));
   localStorage.setItem(epsilonKey, String(learning.epsilon));
 
+  const average =
+    recentScores.length === 0
+      ? 0
+      : recentScores.reduce((sum, value) => sum + value, 0) / recentScores.length;
+
+  pushHistoryPoint(scoreHistory, { x: totalEpisodes, y: board.score });
+  pushHistoryPoint(avgScoreHistory, { x: totalEpisodes, y: average });
+  pushHistoryPoint(bestScoreHistory, { x: totalEpisodes, y: bestScore });
+  pushHistoryPoint(epsilonHistory, { x: totalEpisodes, y: learning.epsilon });
+  updateCharts();
+
   resetBoard(board);
 }
 
@@ -200,6 +349,8 @@ function updateHud() {
 
 function drawBoard(board) {
   const { ctx } = board;
+  const boardPx = board.canvas.width;
+  const cellPx = boardPx / gridCellsPerSide;
   ctx.fillStyle = '#0b1020';
   ctx.fillRect(0, 0, boardPx, boardPx);
 
@@ -223,6 +374,24 @@ function drawBoard(board) {
   board.snake.forEach((segment, index) => {
     ctx.fillStyle = index === 0 ? '#22d3ee' : '#10b981';
     ctx.fillRect(segment.x * cellPx + 1.6, segment.y * cellPx + 1.6, cellPx - 3.2, cellPx - 3.2);
+  });
+}
+
+function resizeBoardCanvas(board) {
+  const nextSize = Math.floor(board.canvas.getBoundingClientRect().width);
+
+  if (nextSize <= 0 || board.canvas.width === nextSize) {
+    return;
+  }
+
+  board.canvas.width = nextSize;
+  board.canvas.height = nextSize;
+  drawBoard(board);
+}
+
+function resizeAllBoards() {
+  boards.forEach((board) => {
+    resizeBoardCanvas(board);
   });
 }
 
@@ -348,8 +517,6 @@ function initBoards() {
     label.textContent = `Game ${i + 1}`;
 
     const canvas = document.createElement('canvas');
-    canvas.width = boardPx;
-    canvas.height = boardPx;
     canvas.className = 'game-board';
 
     wrap.appendChild(label);
@@ -374,6 +541,23 @@ function initBoards() {
     drawBoard(board);
   }
 }
+
+let resizeFrameId;
+
+function scheduleLayoutResize() {
+  if (resizeFrameId) {
+    cancelAnimationFrame(resizeFrameId);
+  }
+
+  resizeFrameId = requestAnimationFrame(() => {
+    resizeAllBoards();
+    resizeCharts();
+  });
+}
+
+const boardResizeObserver = new ResizeObserver(() => {
+  scheduleLayoutResize();
+});
 
 window.addEventListener('keydown', (event) => {
   if (event.key.toLowerCase() === 'b') {
@@ -419,6 +603,11 @@ window.addEventListener('keydown', (event) => {
 });
 
 initBoards();
+boardResizeObserver.observe(gridRoot);
+boardResizeObserver.observe(appRoot);
+boardResizeObserver.observe(document.documentElement);
+window.addEventListener('resize', scheduleLayoutResize);
+scheduleLayoutResize();
 updateHud();
 statusEl.textContent = 'Boot complete. Starting 9-game parallel training...';
 loopId = setInterval(tick, tickMs);
@@ -427,5 +616,10 @@ setInterval(persistQTable, 2500);
 
 window.addEventListener('beforeunload', () => {
   clearInterval(loopId);
+  boardResizeObserver.disconnect();
+  window.removeEventListener('resize', scheduleLayoutResize);
+  if (resizeFrameId) {
+    cancelAnimationFrame(resizeFrameId);
+  }
   persistQTable();
 });
