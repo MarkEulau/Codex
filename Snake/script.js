@@ -1,6 +1,4 @@
-const canvas = document.getElementById('game');
-const ctx = canvas.getContext('2d');
-const scoreEl = document.getElementById('score');
+const gridRoot = document.getElementById('games-grid');
 const bestEl = document.getElementById('best');
 const statusEl = document.getElementById('status');
 const episodesEl = document.getElementById('episodes');
@@ -79,11 +77,13 @@ function resetGame() {
 
 function spawnFood() {
   do {
-    food = {
-      x: Math.floor(Math.random() * tileCount),
-      y: Math.floor(Math.random() * tileCount),
+    board.food = {
+      x: Math.floor(Math.random() * gridCellsPerSide),
+      y: Math.floor(Math.random() * gridCellsPerSide),
     };
-  } while (snake.some((segment) => segment.x === food.x && segment.y === food.y));
+  } while (
+    board.snake.some((segment) => segment.x === board.food.x && segment.y === board.food.y)
+  );
 }
 
 function updateHud() {
@@ -208,6 +208,7 @@ function setDirectionFromInput(x, y) {
     gameStarted = true;
     statusEl.textContent = 'Manual mode running.';
   }
+  return bestAction;
 }
 
 function applyAction(action) {
@@ -238,9 +239,17 @@ function moveSnake() {
       bestEl.textContent = bestScore;
       localStorage.setItem(bestScoreKey, String(bestScore));
     }
-    spawnFood();
+    spawnFood(board);
   } else {
-    snake.pop();
+    board.snake.pop();
+  }
+
+  const distanceAfter =
+    Math.abs(board.snake[0].x - board.food.x) + Math.abs(board.snake[0].y - board.food.y);
+
+  let reward = -0.07;
+  if (ateFood) {
+    reward += 24;
   }
 
   return { dead: false, ateFood };
@@ -305,35 +314,33 @@ function botStep() {
   }
 }
 
-function drawGrid() {
-  ctx.strokeStyle = 'rgba(148, 163, 184, 0.1)';
+function drawBoard(board) {
+  const { ctx } = board;
+  ctx.fillStyle = '#0b1020';
+  ctx.fillRect(0, 0, boardPx, boardPx);
+
+  ctx.strokeStyle = 'rgba(148, 163, 184, 0.08)';
   ctx.lineWidth = 1;
-  for (let i = 0; i <= tileCount; i += 1) {
-    const pos = i * gridSize;
+  for (let i = 0; i <= gridCellsPerSide; i += 1) {
+    const pos = i * cellPx;
     ctx.beginPath();
     ctx.moveTo(pos, 0);
-    ctx.lineTo(pos, canvas.height);
+    ctx.lineTo(pos, boardPx);
     ctx.stroke();
     ctx.beginPath();
     ctx.moveTo(0, pos);
-    ctx.lineTo(canvas.width, pos);
+    ctx.lineTo(boardPx, pos);
     ctx.stroke();
   }
-}
-
-function draw() {
-  ctx.fillStyle = '#0b1020';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  drawGrid();
 
   ctx.fillStyle = '#f43f5e';
-  ctx.fillRect(food.x * gridSize + 2, food.y * gridSize + 2, gridSize - 4, gridSize - 4);
+  ctx.fillRect(board.food.x * cellPx + 1.6, board.food.y * cellPx + 1.6, cellPx - 3.2, cellPx - 3.2);
 
-  snake.forEach((segment, index) => {
+  board.snake.forEach((segment, index) => {
     ctx.fillStyle = index === 0 ? '#22d3ee' : '#10b981';
-    ctx.fillRect(segment.x * gridSize + 2, segment.y * gridSize + 2, gridSize - 4, gridSize - 4);
+    ctx.fillRect(segment.x * cellPx + 1.6, segment.y * cellPx + 1.6, cellPx - 3.2, cellPx - 3.2);
   });
+}
 
   if (gameOver && !botEnabled) {
     ctx.fillStyle = 'rgba(2, 6, 23, 0.65)';
