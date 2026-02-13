@@ -8,14 +8,19 @@
   </head>
   <body>
     <main class="app">
-      <h1>Snake</h1>
+      <h1>Snake RL Trainer</h1>
       <div class="hud">
         <span>Score: <strong id="score">0</strong></span>
         <span>Best: <strong id="best">0</strong></span>
       </div>
+      <div class="hud training">
+        <span>Episodes: <strong id="episodes">0</strong></span>
+        <span>Avg(25): <strong id="avg-score">0.0</strong></span>
+        <span>ε: <strong id="epsilon">1.000</strong></span>
+      </div>
       <canvas id="game" width="400" height="400" aria-label="Snake game board"></canvas>
-      <p class="help">Use arrow keys or WASD to move. Press <kbd>Space</kbd> to restart after game over.</p>
-      <p id="status" class="status">Press any movement key to start.</p>
+      <p class="help">Bot trains continuously with reinforcement learning and auto-restarts each round. Press <kbd>B</kbd> to toggle bot/manual mode.</p>
+      <p id="status" class="status">Booting trainer...</p>
     </main>
     <script src="script.js"></script>
   </body>
