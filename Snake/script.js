@@ -12,7 +12,7 @@ const resetLearningButton = document.getElementById('reset-learning');
 const boardCount = 16;
 const gridCellsPerSide = 20;
 const tickMs = 85;
-const maxHistoryPoints = 300;
+const maxHistoryPoints = Number.POSITIVE_INFINITY;
 
 const bestScoreKey = 'snake-best-score';
 const qTableKey = 'snake-rl-qtable-v1';
