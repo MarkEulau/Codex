@@ -17,7 +17,7 @@ body {
 }
 
 .app {
-  width: min(96vw, 980px);
+  width: min(92vw, 520px);
   display: grid;
   gap: 0.75rem;
   text-align: center;
@@ -45,13 +45,7 @@ h1 {
   background: rgba(30, 41, 59, 0.5);
 }
 
-.games-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.55rem;
-}
-
-.board {
+canvas {
   width: 100%;
   height: auto;
   border: 2px solid #5865f2;

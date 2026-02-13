@@ -8,19 +8,19 @@
   </head>
   <body>
     <main class="app">
-      <h1>Snake RL Trainer (9 Parallel Games)</h1>
+      <h1>Snake RL Trainer</h1>
       <div class="hud">
         <span>Best: <strong id="best">0</strong></span>
         <span>Episodes: <strong id="episodes">0</strong></span>
       </div>
       <div class="hud training">
-        <span>Avg(50): <strong id="avg-score">0.0</strong></span>
+        <span>Episodes: <strong id="episodes">0</strong></span>
+        <span>Avg(25): <strong id="avg-score">0.0</strong></span>
         <span>ε: <strong id="epsilon">1.000</strong></span>
-        <span>Live max: <strong id="live-max">0</strong></span>
       </div>
-      <div id="games-grid" class="games-grid" aria-label="Grid of 9 concurrently playing snake games"></div>
-      <p class="help">All 9 games share one Q-table and train together for faster learning. They restart automatically on death.</p>
-      <p id="status" class="status">Booting 9 training games...</p>
+      <canvas id="game" width="400" height="400" aria-label="Snake game board"></canvas>
+      <p class="help">Bot trains continuously with reinforcement learning and auto-restarts each round. Press <kbd>B</kbd> to toggle bot/manual mode.</p>
+      <p id="status" class="status">Booting trainer...</p>
     </main>
     <script src="script.js"></script>
   </body>
