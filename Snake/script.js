@@ -1,5 +1,6 @@
 const gridRoot = document.getElementById('games-grid');
 const appRoot = document.querySelector('.app');
+const chartsRoot = document.querySelector('.charts');
 const bestEl = document.getElementById('best');
 const statusEl = document.getElementById('status');
 const episodesEl = document.getElementById('episodes');
@@ -149,7 +150,6 @@ function updateCharts() {
     [
       { label: 'Episode score', color: '#22d3ee', points: scoreHistory },
       { label: 'Avg(25)', color: '#f59e0b', points: avgScoreHistory },
-      { label: 'Best', color: '#10b981', points: bestScoreHistory },
     ]
   );
 
@@ -373,6 +373,29 @@ function resizeAllBoards() {
   });
 }
 
+function resizeChartCanvas(canvas) {
+  const rect = canvas.getBoundingClientRect();
+  const width = Math.floor(rect.width);
+  const height = Math.floor(rect.height);
+
+  if (width <= 0 || height <= 0) {
+    return;
+  }
+
+  if (canvas.width === width && canvas.height === height) {
+    return;
+  }
+
+  canvas.width = width;
+  canvas.height = height;
+}
+
+function resizeCharts() {
+  resizeChartCanvas(performanceChartCanvas);
+  resizeChartCanvas(epsilonChartCanvas);
+  updateCharts();
+}
+
 function applyAction(board, action) {
   board.pendingDirectionIndex = rotateDirection(board.directionIndex, action);
 }
@@ -524,6 +547,10 @@ const boardResizeObserver = new ResizeObserver(() => {
   resizeAllBoards();
 });
 
+const chartResizeObserver = new ResizeObserver(() => {
+  resizeCharts();
+});
+
 window.addEventListener('keydown', (event) => {
   if (event.key.toLowerCase() === 'b') {
     botEnabled = !botEnabled;
@@ -569,9 +596,12 @@ window.addEventListener('keydown', (event) => {
 
 initBoards();
 boardResizeObserver.observe(gridRoot);
+if (chartsRoot) {
+  chartResizeObserver.observe(chartsRoot);
+}
 resizeAllBoards();
+resizeCharts();
 updateHud();
-updateCharts();
 statusEl.textContent = 'Boot complete. Starting 9-game parallel training...';
 loopId = setInterval(tick, tickMs);
 
