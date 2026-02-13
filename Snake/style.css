@@ -24,7 +24,7 @@ body {
   min-height: 100vh;
   height: 100vh;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+  grid-template-rows: auto auto minmax(0, 3fr) minmax(0, 1fr) auto auto;
   gap: 0.9rem;
   text-align: center;
   padding: clamp(0.75rem, 1.8vw, 1.4rem);
@@ -97,9 +97,11 @@ h1 {
 
 .charts {
   display: grid;
+  grid-template-rows: 1fr;
   gap: 0.65rem;
-  height: clamp(240px, 30vh, 360px);
+  height: 25vh;
   min-height: 0;
+  align-items: stretch;
 }
 
 .chart-card {
@@ -111,6 +113,7 @@ h1 {
   display: grid;
   grid-template-rows: auto 1fr;
   min-height: 0;
+  height: 100%;
 }
 
 .chart-card h2 {
@@ -126,4 +129,5 @@ h1 {
   display: block;
   border-radius: 6px;
   background: #0b1020;
+  min-height: 0;
 }

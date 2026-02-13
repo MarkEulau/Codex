@@ -8,7 +8,7 @@ const avgScoreEl = document.getElementById('avg-score');
 const epsilonEl = document.getElementById('epsilon');
 const performanceChartCanvas = document.getElementById('performance-chart');
 
-const boardCount = 9;
+const boardCount = 16;
 const gridCellsPerSide = 20;
 const tickMs = 85;
 const maxHistoryPoints = 300;
