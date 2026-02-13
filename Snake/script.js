@@ -12,8 +12,6 @@ const boardCount = 9;
 const gridCellsPerSide = 20;
 const tickMs = 85;
 const maxHistoryPoints = 300;
-const performanceChartHeight = 260;
-const epsilonChartHeight = 200;
 
 const bestScoreKey = 'snake-best-score';
 const qTableKey = 'snake-rl-qtable-v1';
@@ -162,26 +160,6 @@ function updateCharts() {
     learning.epsilonMin,
     1
   );
-}
-
-function resizeChartCanvas(canvas, cssHeight) {
-  const width = Math.max(1, Math.floor(canvas.getBoundingClientRect().width));
-  if (canvas.width === width && canvas.height === cssHeight) {
-    return false;
-  }
-
-  canvas.width = width;
-  canvas.height = cssHeight;
-  return true;
-}
-
-function resizeCharts() {
-  const performanceResized = resizeChartCanvas(performanceChartCanvas, performanceChartHeight);
-  const epsilonResized = resizeChartCanvas(epsilonChartCanvas, epsilonChartHeight);
-
-  if (performanceResized || epsilonResized) {
-    updateCharts();
-  }
 }
 
 function rotateDirection(currentIndex, action) {
@@ -542,21 +520,8 @@ function initBoards() {
   }
 }
 
-let resizeFrameId;
-
-function scheduleLayoutResize() {
-  if (resizeFrameId) {
-    cancelAnimationFrame(resizeFrameId);
-  }
-
-  resizeFrameId = requestAnimationFrame(() => {
-    resizeAllBoards();
-    resizeCharts();
-  });
-}
-
 const boardResizeObserver = new ResizeObserver(() => {
-  scheduleLayoutResize();
+  resizeAllBoards();
 });
 
 window.addEventListener('keydown', (event) => {
@@ -604,10 +569,9 @@ window.addEventListener('keydown', (event) => {
 
 initBoards();
 boardResizeObserver.observe(gridRoot);
-boardResizeObserver.observe(appRoot);
-window.addEventListener('resize', scheduleLayoutResize);
-scheduleLayoutResize();
+resizeAllBoards();
 updateHud();
+updateCharts();
 statusEl.textContent = 'Boot complete. Starting 9-game parallel training...';
 loopId = setInterval(tick, tickMs);
 
@@ -616,9 +580,5 @@ setInterval(persistQTable, 2500);
 window.addEventListener('beforeunload', () => {
   clearInterval(loopId);
   boardResizeObserver.disconnect();
-  window.removeEventListener('resize', scheduleLayoutResize);
-  if (resizeFrameId) {
-    cancelAnimationFrame(resizeFrameId);
-  }
   persistQTable();
 });
