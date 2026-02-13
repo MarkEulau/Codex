@@ -5,10 +5,11 @@ const episodesEl = document.getElementById('episodes');
 const avgScoreEl = document.getElementById('avg-score');
 const epsilonEl = document.getElementById('epsilon');
 
-const gridSize = 20;
-const tileCount = canvas.width / gridSize;
-const tickMs = 95;
-const autoRestartDelayMs = 260;
+const boardCount = 9;
+const gridCellsPerSide = 20;
+const boardPx = 180;
+const cellPx = boardPx / gridCellsPerSide;
+const tickMs = 85;
 
 const bestScoreKey = 'snake-best-score';
 const qTableKey = 'snake-rl-qtable-v1';
@@ -16,16 +17,16 @@ const episodesKey = 'snake-rl-episodes-v1';
 const epsilonKey = 'snake-rl-epsilon-v1';
 
 const directions = [
-  { x: 0, y: -1 }, // up
-  { x: 1, y: 0 }, // right
-  { x: 0, y: 1 }, // down
-  { x: -1, y: 0 }, // left
+  { x: 0, y: -1 },
+  { x: 1, y: 0 },
+  { x: 0, y: 1 },
+  { x: -1, y: 0 },
 ];
 
 const actionTurns = {
-  0: 0, // straight
-  1: -1, // turn left
-  2: 1, // turn right
+  0: 0,
+  1: -1,
+  2: 1,
 };
 
 const learning = {
@@ -33,102 +34,52 @@ const learning = {
   gamma: 0.9,
   epsilon: Number(localStorage.getItem(epsilonKey) || 1),
   epsilonMin: 0.05,
-  epsilonDecay: 0.996,
+  epsilonDecay: 0.9992,
 };
 
 let bestScore = Number(localStorage.getItem(bestScoreKey) || 0);
 let qTable = JSON.parse(localStorage.getItem(qTableKey) || '{}');
 let totalEpisodes = Number(localStorage.getItem(episodesKey) || 0);
 let recentScores = [];
-
-let snake;
-let food;
-let directionIndex;
-let pendingDirectionIndex;
-let score;
-let gameStarted;
-let gameOver;
-let loopId;
-let restartTimeoutId;
 let botEnabled = true;
 
-bestEl.textContent = bestScore;
-
-function resetGame() {
-  clearTimeout(restartTimeoutId);
-  snake = [
-    { x: 10, y: 10 },
-    { x: 9, y: 10 },
-    { x: 8, y: 10 },
-  ];
-  directionIndex = 1;
-  pendingDirectionIndex = 1;
-  score = 0;
-  gameStarted = botEnabled;
-  gameOver = false;
-  scoreEl.textContent = score;
-  spawnFood();
-  updateHud();
-  statusEl.textContent = botEnabled
-    ? 'Training with Q-learning: self-play in progress...'
-    : 'Manual mode: use arrows or WASD.';
-  draw();
-}
-
-function spawnFood() {
-  do {
-    board.food = {
-      x: Math.floor(Math.random() * gridCellsPerSide),
-      y: Math.floor(Math.random() * gridCellsPerSide),
-    };
-  } while (
-    board.snake.some((segment) => segment.x === board.food.x && segment.y === board.food.y)
-  );
-}
-
-function updateHud() {
-  episodesEl.textContent = totalEpisodes;
-  epsilonEl.textContent = learning.epsilon.toFixed(3);
-  const average =
-    recentScores.length === 0
-      ? 0
-      : recentScores.reduce((sum, value) => sum + value, 0) / recentScores.length;
-  avgScoreEl.textContent = average.toFixed(1);
-}
+const boards = [];
+let loopId;
 
 function rotateDirection(currentIndex, action) {
   const turn = actionTurns[action];
   return (currentIndex + turn + directions.length) % directions.length;
 }
 
-function nextHeadAtDirection(index) {
+function nextHeadAtDirection(board, index) {
   return {
-    x: snake[0].x + directions[index].x,
-    y: snake[0].y + directions[index].y,
+    x: board.snake[0].x + directions[index].x,
+    y: board.snake[0].y + directions[index].y,
   };
 }
 
-function wouldCollide(position) {
+function wouldCollide(board, position) {
   const hitWall =
     position.x < 0 ||
-    position.x >= tileCount ||
+    position.x >= gridCellsPerSide ||
     position.y < 0 ||
-    position.y >= tileCount;
+    position.y >= gridCellsPerSide;
+
   if (hitWall) {
     return true;
   }
 
-  return snake
+  return board.snake
     .slice(0, -1)
     .some((segment) => segment.x === position.x && segment.y === position.y);
 }
 
-function relativeFoodState() {
-  const head = snake[0];
-  const forward = directions[directionIndex];
-  const left = directions[(directionIndex + 3) % directions.length];
-  const dx = food.x - head.x;
-  const dy = food.y - head.y;
+function relativeFoodState(board) {
+  const head = board.snake[0];
+  const forward = directions[board.directionIndex];
+  const left = directions[(board.directionIndex + 3) % directions.length];
+  const dx = board.food.x - head.x;
+  const dy = board.food.y - head.y;
 
   const dotForward = dx * forward.x + dy * forward.y;
   const dotLeft = dx * left.x + dy * left.y;
@@ -139,23 +90,23 @@ function relativeFoodState() {
   return { forwardCode, sideCode };
 }
 
-function getState() {
-  const straightIndex = rotateDirection(directionIndex, 0);
-  const leftIndex = rotateDirection(directionIndex, 1);
-  const rightIndex = rotateDirection(directionIndex, 2);
+function getState(board) {
+  const straightIndex = rotateDirection(board.directionIndex, 0);
+  const leftIndex = rotateDirection(board.directionIndex, 1);
+  const rightIndex = rotateDirection(board.directionIndex, 2);
 
-  const dangerStraight = wouldCollide(nextHeadAtDirection(straightIndex)) ? 1 : 0;
-  const dangerLeft = wouldCollide(nextHeadAtDirection(leftIndex)) ? 1 : 0;
-  const dangerRight = wouldCollide(nextHeadAtDirection(rightIndex)) ? 1 : 0;
+  const dangerStraight = wouldCollide(board, nextHeadAtDirection(board, straightIndex)) ? 1 : 0;
+  const dangerLeft = wouldCollide(board, nextHeadAtDirection(board, leftIndex)) ? 1 : 0;
+  const dangerRight = wouldCollide(board, nextHeadAtDirection(board, rightIndex)) ? 1 : 0;
 
-  const { forwardCode, sideCode } = relativeFoodState();
-  const lengthBucket = snake.length < 8 ? 0 : snake.length < 14 ? 1 : 2;
+  const { forwardCode, sideCode } = relativeFoodState(board);
+  const lengthBucket = board.snake.length < 8 ? 0 : board.snake.length < 14 ? 1 : 2;
 
   return [
     dangerStraight,
     dangerLeft,
     dangerRight,
-    directionIndex,
+    board.directionIndex,
     forwardCode,
     sideCode,
     lengthBucket,
@@ -176,11 +127,13 @@ function chooseAction(state) {
 
   const qValues = getQValues(state);
   let bestAction = 0;
+
   for (let i = 1; i < qValues.length; i += 1) {
     if (qValues[i] > qValues[bestAction]) {
       bestAction = i;
     }
   }
+
   return bestAction;
 }
 
@@ -192,72 +145,34 @@ function updateQValue(state, action, reward, nextState, dead) {
   qValues[action] = currentQ + learning.alpha * (learnedQ - currentQ);
 }
 
-function setDirectionFromInput(x, y) {
-  if (gameOver) {
-    return;
-  }
-
-  const current = directions[directionIndex];
-  const isReverse = current.x + x === 0 && current.y + y === 0;
-  if (isReverse && gameStarted) {
-    return;
-  }
-
-  pendingDirectionIndex = directions.findIndex((dir) => dir.x === x && dir.y === y);
-  if (!gameStarted) {
-    gameStarted = true;
-    statusEl.textContent = 'Manual mode running.';
-  }
-  return bestAction;
+function spawnFood(board) {
+  do {
+    board.food = {
+      x: Math.floor(Math.random() * gridCellsPerSide),
+      y: Math.floor(Math.random() * gridCellsPerSide),
+    };
+  } while (
+    board.snake.some((segment) => segment.x === board.food.x && segment.y === board.food.y)
+  );
 }
 
-function applyAction(action) {
-  pendingDirectionIndex = rotateDirection(directionIndex, action);
+function resetBoard(board) {
+  board.snake = [
+    { x: 10, y: 10 },
+    { x: 9, y: 10 },
+    { x: 8, y: 10 },
+  ];
+  board.directionIndex = 1;
+  board.pendingDirectionIndex = 1;
+  board.score = 0;
+  board.gameOver = false;
+  board.gameStarted = botEnabled || board.id === 0;
+  spawnFood(board);
 }
 
-function commitDirection() {
-  directionIndex = pendingDirectionIndex;
-}
-
-function moveSnake() {
-  commitDirection();
-  const nextHead = nextHeadAtDirection(directionIndex);
-
-  if (wouldCollide(nextHead)) {
-    gameOver = true;
-    return { dead: true, ateFood: false };
-  }
-
-  snake.unshift(nextHead);
-  const ateFood = nextHead.x === food.x && nextHead.y === food.y;
-
-  if (ateFood) {
-    score += 10;
-    scoreEl.textContent = score;
-    if (score > bestScore) {
-      bestScore = score;
-      bestEl.textContent = bestScore;
-      localStorage.setItem(bestScoreKey, String(bestScore));
-    }
-    spawnFood(board);
-  } else {
-    board.snake.pop();
-  }
-
-  const distanceAfter =
-    Math.abs(board.snake[0].x - board.food.x) + Math.abs(board.snake[0].y - board.food.y);
-
-  let reward = -0.07;
-  if (ateFood) {
-    reward += 24;
-  }
-
-  return { dead: false, ateFood };
-}
-
-function completeEpisode() {
+function completeEpisode(board) {
   totalEpisodes += 1;
-  recentScores.push(score);
+  recentScores.push(board.score);
   if (recentScores.length > 25) {
     recentScores.shift();
   }
@@ -266,52 +181,21 @@ function completeEpisode() {
 
   localStorage.setItem(episodesKey, String(totalEpisodes));
   localStorage.setItem(epsilonKey, String(learning.epsilon));
-  localStorage.setItem(qTableKey, JSON.stringify(qTable));
 
-  updateHud();
-  statusEl.textContent = `Episode ${totalEpisodes} finished at score ${score}. Restarting...`;
-
-  restartTimeoutId = setTimeout(() => {
-    resetGame();
-  }, autoRestartDelayMs);
+  resetBoard(board);
 }
 
-function botStep() {
-  if (gameOver) {
-    return;
-  }
+function updateHud() {
+  bestEl.textContent = bestScore;
+  episodesEl.textContent = totalEpisodes;
+  epsilonEl.textContent = learning.epsilon.toFixed(3);
 
-  const state = getState();
-  const action = chooseAction(state);
+  const average =
+    recentScores.length === 0
+      ? 0
+      : recentScores.reduce((sum, value) => sum + value, 0) / recentScores.length;
 
-  const distanceBefore =
-    Math.abs(snake[0].x - food.x) + Math.abs(snake[0].y - food.y);
-
-  applyAction(action);
-  const { dead, ateFood } = moveSnake();
-
-  const distanceAfter = dead
-    ? distanceBefore
-    : Math.abs(snake[0].x - food.x) + Math.abs(snake[0].y - food.y);
-
-  let reward = -0.07;
-  if (ateFood) {
-    reward += 24;
-  }
-  if (dead) {
-    reward -= 30;
-  } else if (distanceAfter < distanceBefore) {
-    reward += 0.35;
-  } else if (distanceAfter > distanceBefore) {
-    reward -= 0.2;
-  }
-
-  const nextState = dead ? state : getState();
-  updateQValue(state, action, reward, nextState, dead);
-
-  if (dead) {
-    completeEpisode();
-  }
+  avgScoreEl.textContent = average.toFixed(1);
 }
 
 function drawBoard(board) {
@@ -342,73 +226,206 @@ function drawBoard(board) {
   });
 }
 
-  if (gameOver && !botEnabled) {
-    ctx.fillStyle = 'rgba(2, 6, 23, 0.65)';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = '#f8fafc';
-    ctx.font = 'bold 30px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('Game Over', canvas.width / 2, canvas.height / 2 - 10);
-    ctx.font = '18px sans-serif';
-    ctx.fillText('Press Space to restart', canvas.width / 2, canvas.height / 2 + 22);
+function applyAction(board, action) {
+  board.pendingDirectionIndex = rotateDirection(board.directionIndex, action);
+}
+
+function moveSnake(board) {
+  board.directionIndex = board.pendingDirectionIndex;
+  const nextHead = nextHeadAtDirection(board, board.directionIndex);
+
+  if (wouldCollide(board, nextHead)) {
+    board.gameOver = true;
+    return { dead: true, ateFood: false };
+  }
+
+  board.snake.unshift(nextHead);
+  const ateFood = nextHead.x === board.food.x && nextHead.y === board.food.y;
+
+  if (ateFood) {
+    board.score += 10;
+    if (board.score > bestScore) {
+      bestScore = board.score;
+      localStorage.setItem(bestScoreKey, String(bestScore));
+    }
+    spawnFood(board);
+  } else {
+    board.snake.pop();
+  }
+
+  return { dead: false, ateFood };
+}
+
+function botStep(board) {
+  if (board.gameOver || !board.gameStarted) {
+    return;
+  }
+
+  const state = getState(board);
+  const action = chooseAction(state);
+
+  const distanceBefore =
+    Math.abs(board.snake[0].x - board.food.x) + Math.abs(board.snake[0].y - board.food.y);
+
+  applyAction(board, action);
+  const { dead, ateFood } = moveSnake(board);
+
+  const distanceAfter = dead
+    ? distanceBefore
+    : Math.abs(board.snake[0].x - board.food.x) + Math.abs(board.snake[0].y - board.food.y);
+
+  let reward = -0.07;
+  if (ateFood) {
+    reward += 24;
+  }
+  if (dead) {
+    reward -= 30;
+  } else if (distanceAfter < distanceBefore) {
+    reward += 0.35;
+  } else if (distanceAfter > distanceBefore) {
+    reward -= 0.2;
+  }
+
+  const nextState = dead ? state : getState(board);
+  updateQValue(state, action, reward, nextState, dead);
+
+  if (dead) {
+    completeEpisode(board);
+  }
+}
+
+function setDirectionFromInput(board, x, y) {
+  if (board.gameOver) {
+    return;
+  }
+
+  const current = directions[board.directionIndex];
+  const isReverse = current.x + x === 0 && current.y + y === 0;
+
+  if (isReverse && board.gameStarted) {
+    return;
+  }
+
+  board.pendingDirectionIndex = directions.findIndex((dir) => dir.x === x && dir.y === y);
+  if (!board.gameStarted) {
+    board.gameStarted = true;
   }
 }
 
 function tick() {
-  if (gameStarted && !gameOver) {
-    if (botEnabled) {
-      botStep();
-    } else {
-      moveSnake();
+  boards.forEach((board) => {
+    if (botEnabled || board.id !== 0) {
+      botStep(board);
+    } else if (board.gameStarted && !board.gameOver) {
+      moveSnake(board);
+      if (board.gameOver) {
+        resetBoard(board);
+      }
     }
-  }
+    drawBoard(board);
+  });
 
-  if (gameOver && botEnabled && !restartTimeoutId) {
-    completeEpisode();
-  }
+  updateHud();
 
-  draw();
+  if (botEnabled) {
+    statusEl.textContent = 'Training with Q-learning across 9 games in parallel...';
+  } else {
+    statusEl.textContent = 'Manual mode on board #1. Other boards continue bot training.';
+  }
+}
+
+function persistQTable() {
+  localStorage.setItem(qTableKey, JSON.stringify(qTable));
+}
+
+function initBoards() {
+  for (let i = 0; i < boardCount; i += 1) {
+    const wrap = document.createElement('article');
+    wrap.className = 'board-wrap';
+
+    const label = document.createElement('p');
+    label.className = 'board-label';
+    label.textContent = `Game ${i + 1}`;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = boardPx;
+    canvas.height = boardPx;
+    canvas.className = 'game-board';
+
+    wrap.appendChild(label);
+    wrap.appendChild(canvas);
+    gridRoot.appendChild(wrap);
+
+    const board = {
+      id: i,
+      canvas,
+      ctx: canvas.getContext('2d'),
+      snake: [],
+      food: { x: 0, y: 0 },
+      directionIndex: 1,
+      pendingDirectionIndex: 1,
+      score: 0,
+      gameStarted: true,
+      gameOver: false,
+    };
+
+    resetBoard(board);
+    boards.push(board);
+    drawBoard(board);
+  }
 }
 
 window.addEventListener('keydown', (event) => {
+  if (event.key.toLowerCase() === 'b') {
+    botEnabled = !botEnabled;
+    if (!botEnabled) {
+      boards[0].gameStarted = false;
+    }
+    event.preventDefault();
+    return;
+  }
+
+  if (botEnabled) {
+    return;
+  }
+
   switch (event.key.toLowerCase()) {
     case 'arrowup':
     case 'w':
-      if (!botEnabled) setDirectionFromInput(0, -1);
+      setDirectionFromInput(boards[0], 0, -1);
       break;
     case 'arrowdown':
     case 's':
-      if (!botEnabled) setDirectionFromInput(0, 1);
+      setDirectionFromInput(boards[0], 0, 1);
       break;
     case 'arrowleft':
     case 'a':
-      if (!botEnabled) setDirectionFromInput(-1, 0);
+      setDirectionFromInput(boards[0], -1, 0);
       break;
     case 'arrowright':
     case 'd':
-      if (!botEnabled) setDirectionFromInput(1, 0);
-      break;
-    case 'b':
-      botEnabled = !botEnabled;
-      statusEl.textContent = botEnabled
-        ? 'Bot mode enabled. Continuing RL self-play training.'
-        : 'Manual mode enabled. Use arrows/WASD to move.';
-      resetGame();
+      setDirectionFromInput(boards[0], 1, 0);
       break;
     case ' ':
-      if (!botEnabled && gameOver) {
-        resetGame();
+      if (boards[0].gameOver) {
+        resetBoard(boards[0]);
       }
       break;
     default:
       return;
   }
+
   event.preventDefault();
 });
 
-resetGame();
+initBoards();
+updateHud();
+statusEl.textContent = 'Boot complete. Starting 9-game parallel training...';
 loopId = setInterval(tick, tickMs);
+
+setInterval(persistQTable, 2500);
+
 window.addEventListener('beforeunload', () => {
   clearInterval(loopId);
-  clearTimeout(restartTimeoutId);
+  persistQTable();
 });
