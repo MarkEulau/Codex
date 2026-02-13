@@ -3,23 +3,30 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Snake</title>
+    <title>Snake RL Trainer</title>
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
     <main class="app">
-      <h1>Snake RL Trainer</h1>
-      <div class="hud">
-        <span>Best: <strong id="best">0</strong></span>
-        <span>Episodes: <strong id="episodes">0</strong></span>
-      </div>
+      <h1>Snake RL Trainer (3×3 Parallel)</h1>
+
       <div class="hud training">
+        <span>Best: <strong id="best">0</strong></span>
         <span>Episodes: <strong id="episodes">0</strong></span>
         <span>Avg(25): <strong id="avg-score">0.0</strong></span>
         <span>ε: <strong id="epsilon">1.000</strong></span>
       </div>
-      <canvas id="game" width="400" height="400" aria-label="Snake game board"></canvas>
-      <p class="help">Bot trains continuously with reinforcement learning and auto-restarts each round. Press <kbd>B</kbd> to toggle bot/manual mode.</p>
+
+      <section
+        id="games-grid"
+        class="games-grid"
+        aria-label="Nine snake game boards running in parallel"
+      ></section>
+
+      <p class="help">
+        The bot trains continuously across 9 games at once (shared Q-table).
+        Press <kbd>B</kbd> to toggle bot/manual mode for board #1.
+      </p>
       <p id="status" class="status">Booting trainer...</p>
     </main>
     <script src="script.js"></script>
