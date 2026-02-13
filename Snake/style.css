@@ -82,3 +82,32 @@ h1 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+
+.charts {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.chart-card {
+  border: 1px solid rgba(88, 101, 242, 0.55);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.72);
+  padding: 0.5rem;
+  text-align: left;
+}
+
+.chart-card h2 {
+  margin: 0 0 0.45rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #c7d2fe;
+}
+
+.chart-canvas {
+  width: 100%;
+  height: auto;
+  display: block;
+  border-radius: 6px;
+  background: #0b1020;
+}
