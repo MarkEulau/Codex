@@ -23,6 +23,17 @@
         aria-label="Nine snake game boards running in parallel"
       ></section>
 
+      <section class="charts" aria-label="Learning progress charts">
+        <article class="chart-card">
+          <h2>Performance vs Runs</h2>
+          <canvas id="performance-chart" class="chart-canvas" width="900" height="260"></canvas>
+        </article>
+        <article class="chart-card">
+          <h2>Exploration vs Runs</h2>
+          <canvas id="epsilon-chart" class="chart-canvas" width="900" height="200"></canvas>
+        </article>
+      </section>
+
       <p class="help">
         The bot trains continuously across 9 games at once (shared Q-table).
         Press <kbd>B</kbd> to toggle bot/manual mode for board #1.
