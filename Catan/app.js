@@ -17,6 +17,8 @@ const COST = {
 };
 const PLAYER_COLORS = ["#b93b2a", "#2b66be", "#d49419", "#2f8852"];
 const HIGH_PROBABILITY_NUMBERS = new Set([6, 8]);
+const DICE_SUMS = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+const DEFAULT_TURN_SECONDS = 60;
 const HEX_NEIGHBOR_DIRS = [
   [1, 0],
   [1, -1],
@@ -25,6 +27,14 @@ const HEX_NEIGHBOR_DIRS = [
   [-1, 1],
   [0, 1],
 ];
+const DIE_FACE_ROTATIONS = {
+  1: [0, 0],
+  2: [-90, 0],
+  3: [0, -90],
+  4: [0, 90],
+  5: [90, 0],
+  6: [0, 180],
+};
 
 const BOARD_RADIUS = 2;
 const HEX_SIZE = 74;
@@ -45,6 +55,17 @@ const state = {
   round: 1,
   hasRolled: false,
   diceResult: null,
+  isRollingDice: false,
+  rollingDiceValue: null,
+  rollResultPopupValue: null,
+  rollHistogram: {},
+  rollCountTotal: 0,
+  histogramOpen: false,
+  turnSeconds: DEFAULT_TURN_SECONDS,
+  turnTimerActive: false,
+  turnTimerEndMs: 0,
+  turnTimerRemainingMs: DEFAULT_TURN_SECONDS * 1000,
+  turnTimeoutBusy: false,
   pendingRobberMove: false,
   mode: "none", // none | road | settlement | city | robber
   tradeMenuOpen: false,
@@ -63,6 +84,7 @@ const refs = {
   playerTradeSection: document.getElementById("playerTradeSection"),
   setupFields: document.getElementById("setupFields"),
   playerCount: document.getElementById("playerCount"),
+  turnSeconds: document.getElementById("turnSeconds"),
   nameInputs: document.getElementById("nameInputs"),
   startBtn: document.getElementById("startBtn"),
   restartBtn: document.getElementById("restartBtn"),
@@ -87,6 +109,14 @@ const refs = {
   turnBadge: document.getElementById("turnBadge"),
   turnBadgeDot: document.getElementById("turnBadgeDot"),
   turnBadgeText: document.getElementById("turnBadgeText"),
+  turnClock: document.getElementById("turnClock"),
+  turnClockText: document.getElementById("turnClockText"),
+  diceRollStage: document.getElementById("diceRollStage"),
+  boardDieA: document.getElementById("boardDieA"),
+  boardDieB: document.getElementById("boardDieB"),
+  rollResultPopup: document.getElementById("rollResultPopup"),
+  histogramToggleBtn: document.getElementById("histogramToggleBtn"),
+  rollHistogram: document.getElementById("rollHistogram"),
   statusText: document.getElementById("statusText"),
   tableStats: document.getElementById("tableStats"),
   buildPanel: document.getElementById("buildPanel"),
@@ -100,10 +130,17 @@ const refs = {
 };
 
 let actionModalResolver = null;
+let turnTimerInterval = null;
 
 function resourceMap(init = 0) {
   const out = {};
   for (const res of RESOURCES) out[res] = init;
+  return out;
+}
+
+function emptyRollHistogram() {
+  const out = {};
+  for (const sum of DICE_SUMS) out[sum] = 0;
   return out;
 }
 
@@ -221,6 +258,171 @@ function parsePositiveInt(raw) {
   return num;
 }
 
+function clampTurnSeconds(raw) {
+  const parsed = parsePositiveInt(raw);
+  if (parsed === null) return DEFAULT_TURN_SECONDS;
+  return Math.min(600, Math.max(10, parsed));
+}
+
+function randomChoice(arr) {
+  if (!arr || arr.length === 0) return null;
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function shouldDisplayTurnClock() {
+  if (state.turnSeconds < 1) return false;
+  if (state.players.length === 0) return false;
+  return state.phase === "setup" || state.phase === "main";
+}
+
+function renderTurnClock() {
+  if (!refs.turnClock || !refs.turnClockText) return;
+  const showClock = shouldDisplayTurnClock();
+  refs.turnClock.classList.toggle("hidden", !showClock);
+  refs.turnClock.setAttribute("aria-hidden", showClock ? "false" : "true");
+  if (!showClock) return;
+
+  const durationMs = Math.max(1000, state.turnSeconds * 1000);
+  const remainingMs = Math.max(0, Math.min(durationMs, state.turnTimerRemainingMs));
+  const progress = 1 - remainingMs / durationMs;
+  const angle = Math.round(progress * 360);
+  const secondsLeft = Math.ceil(remainingMs / 1000);
+  const activePlayer = state.players[state.currentPlayer];
+
+  refs.turnClock.style.setProperty("--turn-angle", `${angle}deg`);
+  refs.turnClock.style.setProperty("--turn-clock-color", activePlayer ? activePlayer.color : "#f0bf62");
+  refs.turnClock.classList.toggle("urgent", state.turnTimerActive && secondsLeft <= 5);
+  refs.turnClockText.textContent = String(secondsLeft);
+}
+
+function clearTurnTimerInterval() {
+  if (turnTimerInterval === null) return;
+  window.clearInterval(turnTimerInterval);
+  turnTimerInterval = null;
+}
+
+function stopTurnTimer(resetToFull = false) {
+  clearTurnTimerInterval();
+  state.turnTimerActive = false;
+  if (resetToFull) state.turnTimerRemainingMs = state.turnSeconds * 1000;
+  renderTurnClock();
+}
+
+function restartTurnTimer() {
+  stopTurnTimer(true);
+  if (!shouldDisplayTurnClock()) return;
+
+  state.turnTimerActive = true;
+  state.turnTimerEndMs = Date.now() + state.turnSeconds * 1000;
+  state.turnTimerRemainingMs = state.turnSeconds * 1000;
+  renderTurnClock();
+
+  turnTimerInterval = window.setInterval(() => {
+    if (!state.turnTimerActive) return;
+    state.turnTimerRemainingMs = Math.max(0, state.turnTimerEndMs - Date.now());
+    renderTurnClock();
+    if (state.turnTimerRemainingMs <= 0) {
+      stopTurnTimer(false);
+      void handleTurnTimeout();
+    }
+  }, 100);
+}
+
+function delay(ms) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
+function randomDieValue() {
+  return 1 + Math.floor(Math.random() * 6);
+}
+
+function randomInt(min, max) {
+  return Math.round(min + Math.random() * (max - min));
+}
+
+function dicePairForTotal(total) {
+  const pairs = [];
+  for (let dieA = 1; dieA <= 6; dieA += 1) {
+    const dieB = total - dieA;
+    if (dieB >= 1 && dieB <= 6) pairs.push([dieA, dieB]);
+  }
+  return pairs[Math.floor(Math.random() * pairs.length)];
+}
+
+function orientDieCube(dieEl, faceValue) {
+  const [rx, ry] = DIE_FACE_ROTATIONS[faceValue] ?? DIE_FACE_ROTATIONS[1];
+  dieEl.style.setProperty("--face-rx", `${rx}deg`);
+  dieEl.style.setProperty("--face-ry", `${ry}deg`);
+}
+
+function setBoardDiceFaces(dieA, dieB) {
+  const safeDieA = Math.min(6, Math.max(1, dieA));
+  const safeDieB = Math.min(6, Math.max(1, dieB));
+  refs.boardDieA.dataset.face = String(safeDieA);
+  refs.boardDieB.dataset.face = String(safeDieB);
+  orientDieCube(refs.boardDieA, safeDieA);
+  orientDieCube(refs.boardDieB, safeDieB);
+}
+
+function configureBoardDiceThrow() {
+  const stage = refs.diceRollStage;
+  const rect = stage.getBoundingClientRect();
+  const width = Math.max(rect.width, 1);
+  const height = Math.max(rect.height, 1);
+
+  const aX = Math.round(width * (0.24 + Math.random() * 0.16));
+  const bX = Math.round(width * (0.54 + Math.random() * 0.2));
+  const baseY = Math.round(height * (0.28 + Math.random() * 0.12));
+  const aY = baseY + Math.round(Math.random() * height * 0.08);
+  const bY = baseY + Math.round(Math.random() * height * 0.08);
+
+  const launchY = -Math.round(height * (0.56 + Math.random() * 0.2));
+  const aLaunchX = -randomInt(120, 210);
+  const bLaunchX = Math.round(width + randomInt(120, 210));
+
+  stage.style.setProperty("--dice-a-x", `${aX}px`);
+  stage.style.setProperty("--dice-a-y", `${aY}px`);
+  stage.style.setProperty("--dice-b-x", `${bX}px`);
+  stage.style.setProperty("--dice-b-y", `${bY}px`);
+  stage.style.setProperty("--dice-launch-y", `${launchY}px`);
+  stage.style.setProperty("--dice-a-launch-x", `${aLaunchX}px`);
+  stage.style.setProperty("--dice-b-launch-x", `${bLaunchX}px`);
+  stage.style.setProperty("--dice-a-r", `${randomInt(-24, 24)}deg`);
+  stage.style.setProperty("--dice-b-r", `${randomInt(-24, 24)}deg`);
+  stage.style.setProperty("--dice-a-pitch", `${randomInt(-12, 12)}deg`);
+  stage.style.setProperty("--dice-a-yaw", `${randomInt(-20, 20)}deg`);
+  stage.style.setProperty("--dice-b-pitch", `${randomInt(-12, 12)}deg`);
+  stage.style.setProperty("--dice-b-yaw", `${randomInt(-20, 20)}deg`);
+  stage.style.setProperty("--dice-a-spin-x", `${randomInt(1080, 1540)}deg`);
+  stage.style.setProperty("--dice-a-spin-y", `${randomInt(860, 1320)}deg`);
+  stage.style.setProperty("--dice-a-spin-z", `${randomInt(-80, 80)}deg`);
+  stage.style.setProperty("--dice-b-spin-x", `${randomInt(1160, 1600)}deg`);
+  stage.style.setProperty("--dice-b-spin-y", `${randomInt(-1360, -920)}deg`);
+  stage.style.setProperty("--dice-b-spin-z", `${randomInt(-90, 90)}deg`);
+  stage.style.setProperty("--dice-a-b1x", `${randomInt(-44, 44)}px`);
+  stage.style.setProperty("--dice-a-b2x", `${randomInt(-28, 28)}px`);
+  stage.style.setProperty("--dice-a-b3x", `${randomInt(-16, 16)}px`);
+  stage.style.setProperty("--dice-a-b4x", `${randomInt(-10, 10)}px`);
+  stage.style.setProperty("--dice-b-b1x", `${randomInt(-44, 44)}px`);
+  stage.style.setProperty("--dice-b-b2x", `${randomInt(-28, 28)}px`);
+  stage.style.setProperty("--dice-b-b3x", `${randomInt(-16, 16)}px`);
+  stage.style.setProperty("--dice-b-b4x", `${randomInt(-10, 10)}px`);
+  stage.style.setProperty("--dice-a-b1y", `${randomInt(56, 92)}px`);
+  stage.style.setProperty("--dice-a-b2y", `${randomInt(26, 44)}px`);
+  stage.style.setProperty("--dice-a-b3y", `${randomInt(10, 20)}px`);
+  stage.style.setProperty("--dice-a-b4y", `${randomInt(4, 10)}px`);
+  stage.style.setProperty("--dice-b-b1y", `${randomInt(56, 92)}px`);
+  stage.style.setProperty("--dice-b-b2y", `${randomInt(26, 44)}px`);
+  stage.style.setProperty("--dice-b-b3y", `${randomInt(10, 20)}px`);
+  stage.style.setProperty("--dice-b-b4y", `${randomInt(4, 10)}px`);
+
+  stage.classList.remove("rolling");
+  void stage.offsetWidth;
+  stage.classList.add("rolling");
+}
+
 function updateSetupCardVisibility() {
   const gameStarted = state.phase !== "pregame";
   refs.setupFields.classList.toggle("hidden", gameStarted);
@@ -323,19 +525,6 @@ function turnBadgeText(player) {
   return `${player.name} | Actions`;
 }
 
-function affordableBuildCount(player, cost) {
-  return Math.min(...Object.entries(cost).map(([res, amt]) => Math.floor(player.hand[res] / amt)));
-}
-
-function missingCostSummary(player, cost) {
-  const missing = [];
-  for (const [res, amt] of Object.entries(cost)) {
-    const gap = amt - player.hand[res];
-    if (gap > 0) missing.push(`${gap} ${res}`);
-  }
-  return missing.join(", ");
-}
-
 function payCost(player, cost) {
   for (const [res, amt] of Object.entries(cost)) player.hand[res] -= amt;
 }
@@ -414,6 +603,7 @@ function checkVictory(playerIdx) {
   if (victoryPoints(player) < 10) return false;
   state.phase = "gameover";
   state.pendingRobberMove = false;
+  stopTurnTimer(true);
   setStatus(`${player.name} wins with 10+ victory points.`);
   logEvent(`${player.name} wins the game.`);
   return true;
@@ -536,6 +726,11 @@ function distributeResources(roll) {
 async function chooseDiscardResource(player, toDiscard) {
   let remaining = toDiscard;
   while (remaining > 0) {
+    if (state.turnTimeoutBusy) {
+      discardRandomResources(player, remaining);
+      remaining = 0;
+      break;
+    }
     const options = RESOURCES.filter((res) => player.hand[res] > 0).map((res) => ({
       label: `${res[0].toUpperCase() + res.slice(1)} (${player.hand[res]})`,
       value: res,
@@ -565,9 +760,57 @@ async function handleRollSeven() {
   setStatus("Rolled 7: click a tile to move the robber.");
 }
 
+function discardRandomResources(player, amount) {
+  for (let i = 0; i < amount; i += 1) {
+    const options = RESOURCES.filter((res) => player.hand[res] > 0);
+    const picked = randomChoice(options);
+    if (!picked) break;
+    player.hand[picked] -= 1;
+  }
+}
+
+function autoMoveRobberForPlayer(playerIdx) {
+  const tileChoices = state.tiles.map((tile) => tile.idx).filter((idx) => idx !== state.robberTile);
+  const newRobberTile = randomChoice(tileChoices);
+  if (newRobberTile === null || newRobberTile === undefined) return;
+
+  state.robberTile = newRobberTile;
+  const victims = new Set();
+  for (const nodeIdx of state.tiles[newRobberTile].nodes) {
+    const owner = state.nodes[nodeIdx].owner;
+    if (owner !== null && owner !== playerIdx && resourceCount(state.players[owner]) > 0) victims.add(owner);
+  }
+
+  const victimIdx = randomChoice(Array.from(victims));
+  if (victimIdx !== null && victimIdx !== undefined) {
+    const stolen = stealRandomResource(victimIdx, playerIdx);
+    if (stolen) {
+      logEvent(`${state.players[playerIdx].name} stole ${stolen} from ${state.players[victimIdx].name} (timer auto).`);
+      return;
+    }
+  }
+  logEvent(`${state.players[playerIdx].name} moved robber (timer auto, no victim).`);
+}
+
+function handleRollSevenAuto(rollerIdx) {
+  for (const player of state.players) {
+    const total = resourceCount(player);
+    if (total <= 7) continue;
+    const toDiscard = Math.floor(total / 2);
+    discardRandomResources(player, toDiscard);
+    logEvent(`${player.name} discarded ${toDiscard} card(s) (timer auto).`);
+  }
+
+  autoMoveRobberForPlayer(rollerIdx);
+  state.pendingRobberMove = false;
+  state.mode = "none";
+  setStatus("Rolled 7: robber resolved automatically.");
+}
+
 async function pickVictim(victims) {
   if (victims.length === 1) return victims[0];
   while (true) {
+    if (state.turnTimeoutBusy) return victims[0];
     const picked = await showActionModal({
       title: "Choose Robber Victim",
       text: "Pick a player to steal from.",
@@ -626,16 +869,135 @@ async function moveRobber(playerIdx, tileIdx) {
   return true;
 }
 
+function setupRoadOptionsForNode(playerIdx, nodeIdx) {
+  const node = state.nodes[nodeIdx];
+  if (!node) return [];
+  const options = [];
+  for (const edgeIdx of node.edges) {
+    if (canBuildRoad(playerIdx, edgeIdx, nodeIdx).ok) options.push(edgeIdx);
+  }
+  return options;
+}
+
+function randomSetupPlacementPair(playerIdx) {
+  const nodeOrder = shuffle(state.nodes.map((_, idx) => idx));
+  for (const nodeIdx of nodeOrder) {
+    if (!canBuildSettlement(playerIdx, nodeIdx, true).ok) continue;
+    const roadOptions = setupRoadOptionsForNode(playerIdx, nodeIdx);
+    if (roadOptions.length === 0) continue;
+    return { nodeIdx, edgeIdx: randomChoice(roadOptions) };
+  }
+  return null;
+}
+
+function autoCompleteSetupTurn() {
+  const setup = state.setup;
+  if (!setup) return false;
+
+  const playerIdx = state.currentPlayer;
+  const playerName = state.players[playerIdx].name;
+
+  if (setup.expecting === "road" && setup.lastSettlementNode !== null) {
+    const roadOptions = setupRoadOptionsForNode(playerIdx, setup.lastSettlementNode);
+    const edgeIdx = randomChoice(roadOptions);
+    if (edgeIdx === null || edgeIdx === undefined) return false;
+    if (!buildRoad(playerIdx, edgeIdx, { free: true, setupNode: setup.lastSettlementNode })) return false;
+    if (setup.turnIndex >= state.players.length) {
+      gainStartingResources(playerIdx, setup.lastSettlementNode);
+      logEvent(`${playerName} gained starting resources.`);
+    }
+    logEvent(`${playerName} timed out. Road auto-placed.`);
+    setStatus(`${playerName} timed out. Road auto-placed.`);
+    advanceSetup();
+    return true;
+  }
+
+  if (setup.expecting !== "settlement") return false;
+  const placement = randomSetupPlacementPair(playerIdx);
+  if (!placement) return false;
+
+  if (!buildSettlement(playerIdx, placement.nodeIdx, { free: true, setup: true })) return false;
+  setup.selectedSettlementNode = null;
+  setup.expecting = "road";
+  setup.lastSettlementNode = placement.nodeIdx;
+  if (!buildRoad(playerIdx, placement.edgeIdx, { free: true, setupNode: placement.nodeIdx })) return false;
+
+  if (setup.turnIndex >= state.players.length) {
+    gainStartingResources(playerIdx, placement.nodeIdx);
+    logEvent(`${playerName} gained starting resources.`);
+  }
+  logEvent(`${playerName} timed out. Settlement + road auto-placed.`);
+  setStatus(`${playerName} timed out. Setup auto-placed.`);
+  advanceSetup();
+  return true;
+}
+
+async function handleTurnTimeout() {
+  if (state.turnTimeoutBusy) return;
+  state.turnTimeoutBusy = true;
+  if (actionModalResolver) closeActionModal(null);
+
+  try {
+    if (state.phase === "setup") {
+      if (!autoCompleteSetupTurn()) {
+        setStatus(`${currentPlayerObj().name}: timer expired, but no valid setup auto-placement.`);
+        restartTurnTimer();
+      }
+      render();
+      return;
+    }
+
+    if (state.phase !== "main" || state.phase === "gameover") return;
+
+    const timedOutPlayerName = currentPlayerObj().name;
+    if (state.isRollingDice) {
+      while (state.isRollingDice) await delay(90);
+      if (state.phase !== "main" || state.phase === "gameover") return;
+    }
+
+    if (!state.hasRolled) {
+      logEvent(`${timedOutPlayerName} timed out. Auto-rolling.`);
+      await rollDice({ auto: true });
+    } else if (state.pendingRobberMove) {
+      autoMoveRobberForPlayer(state.currentPlayer);
+      state.pendingRobberMove = false;
+      state.mode = "none";
+      logEvent(`${timedOutPlayerName} timed out. Robber resolved automatically.`);
+    } else {
+      logEvent(`${timedOutPlayerName} timed out.`);
+    }
+
+    if (state.phase === "main" && !state.pendingRobberMove && !state.isRollingDice) {
+      setStatus(`${timedOutPlayerName} timed out. Turn passed.`);
+      endTurn();
+    } else {
+      if (state.phase === "main" && !state.turnTimerActive) restartTurnTimer();
+      render();
+    }
+  } finally {
+    state.turnTimeoutBusy = false;
+  }
+}
+
 function startMainPhase() {
   state.phase = "main";
   state.currentPlayer = 0;
   state.hasRolled = false;
+  state.isRollingDice = false;
+  state.rollingDiceValue = null;
+  state.rollResultPopupValue = null;
+  state.rollHistogram = emptyRollHistogram();
+  state.rollCountTotal = 0;
+  state.histogramOpen = false;
+  state.turnTimeoutBusy = false;
+  state.turnTimerRemainingMs = state.turnSeconds * 1000;
   state.pendingRobberMove = false;
   state.mode = "none";
   state.tradeMenuOpen = false;
   state.setup = null;
   setStatus(`${currentPlayerObj().name}'s turn. Roll dice.`);
   logEvent("Setup complete. Main game begins.");
+  restartTurnTimer();
 }
 
 function advanceSetup() {
@@ -650,6 +1012,7 @@ function advanceSetup() {
   setup.lastSettlementNode = null;
   setup.selectedSettlementNode = null;
   setStatus(`${currentPlayerObj().name}: select settlement, then click again to confirm.`);
+  restartTurnTimer();
 }
 
 function beginSetup(players) {
@@ -665,16 +1028,31 @@ function beginSetup(players) {
   state.currentPlayer = state.setup.order[0];
   state.round = 1;
   state.hasRolled = false;
+  state.isRollingDice = false;
+  state.rollingDiceValue = null;
+  state.rollResultPopupValue = null;
+  state.rollHistogram = emptyRollHistogram();
+  state.rollCountTotal = 0;
+  state.histogramOpen = false;
+  state.turnTimeoutBusy = false;
+  state.turnTimerRemainingMs = state.turnSeconds * 1000;
   state.pendingRobberMove = false;
   state.diceResult = null;
   state.mode = "none";
   state.tradeMenuOpen = false;
   setStatus(`${currentPlayerObj().name}: select settlement, then click again to confirm.`);
   logEvent("Setup started.");
+  restartTurnTimer();
 }
 
 function startGame() {
   const playerCount = Number(refs.playerCount.value);
+  state.turnSeconds = clampTurnSeconds(refs.turnSeconds.value);
+  refs.turnSeconds.value = String(state.turnSeconds);
+  state.turnTimerRemainingMs = state.turnSeconds * 1000;
+  state.turnTimeoutBusy = false;
+  state.histogramOpen = false;
+  stopTurnTimer(true);
   const names = [];
   const inputs = refs.nameInputs.querySelectorAll("input");
   for (let i = 0; i < playerCount; i += 1) {
@@ -1242,7 +1620,7 @@ function renderBuildPanel() {
 
   const title = document.createElement("div");
   title.className = "build-title";
-  title.textContent = `Current Build Options (${player.name})`;
+  title.textContent = `Build Costs (${player.name})`;
   wrap.appendChild(title);
 
   const entries = [
@@ -1251,26 +1629,77 @@ function renderBuildPanel() {
     { label: "City", cost: COST.city },
   ];
 
+  function appendCostChips(target, cost) {
+    const strip = document.createElement("div");
+    strip.className = "resource-strip build-cost-strip";
+    for (const [resource, amount] of Object.entries(cost)) {
+      const chip = document.createElement("div");
+      chip.className = "resource-chip build-cost-resource";
+      chip.title = `${resource}: ${amount}`;
+
+      const iconWrap = document.createElement("span");
+      iconWrap.className = "resource-chip-icon";
+      iconWrap.appendChild(createResourceIconSvg(resource));
+      chip.appendChild(iconWrap);
+
+      const count = document.createElement("span");
+      count.className = "resource-chip-count";
+      count.textContent = String(amount);
+      chip.appendChild(count);
+
+      strip.appendChild(chip);
+    }
+    target.appendChild(strip);
+  }
+
   entries.forEach((entry) => {
     const canBuild = canAfford(player, entry.cost);
-    const chip = document.createElement("div");
-    chip.className = `build-chip ${canBuild ? "ok" : "locked"}`;
-    const count = affordableBuildCount(player, entry.cost);
-    if (canBuild) {
-      chip.textContent = `${entry.label}: yes (${count} now)`;
-    } else {
-      chip.textContent = `${entry.label}: need ${missingCostSummary(player, entry.cost)}`;
-    }
-    wrap.appendChild(chip);
+    const card = document.createElement("div");
+    card.className = `build-chip ${canBuild ? "ok" : "locked"}`;
+
+    const head = document.createElement("div");
+    head.className = "build-chip-head";
+
+    const label = document.createElement("span");
+    label.className = "build-chip-label";
+    label.textContent = entry.label;
+    head.appendChild(label);
+
+    const statePill = document.createElement("span");
+    statePill.className = "build-chip-state";
+    statePill.textContent = canBuild ? "Ready" : "Not Ready";
+    head.appendChild(statePill);
+
+    card.appendChild(head);
+    appendCostChips(card, entry.cost);
+    wrap.appendChild(card);
   });
 
-  const tradeable = RESOURCES.filter((res) => player.hand[res] >= 4);
+  const canBankTrade = hasBankTradeOption(player);
   const bankTrade = document.createElement("div");
-  bankTrade.className = `build-chip ${tradeable.length > 0 ? "ok" : "locked"}`;
-  bankTrade.textContent =
-    tradeable.length > 0
-      ? `Bank Trade: yes (${tradeable.join(", ")})`
-      : "Bank Trade: need 4 of one resource";
+  bankTrade.className = `build-chip ${canBankTrade ? "ok" : "locked"}`;
+
+  const bankHead = document.createElement("div");
+  bankHead.className = "build-chip-head";
+
+  const bankLabel = document.createElement("span");
+  bankLabel.className = "build-chip-label";
+  bankLabel.textContent = "Bank 4:1";
+  bankHead.appendChild(bankLabel);
+
+  const bankState = document.createElement("span");
+  bankState.className = "build-chip-state";
+  bankState.textContent = canBankTrade ? "Ready" : "Not Ready";
+  bankHead.appendChild(bankState);
+
+  bankTrade.appendChild(bankHead);
+  appendCostChips(
+    bankTrade,
+    RESOURCES.reduce((acc, resource) => {
+      acc[resource] = 4;
+      return acc;
+    }, {})
+  );
   wrap.appendChild(bankTrade);
 
   refs.buildPanel.appendChild(wrap);
@@ -1285,6 +1714,42 @@ function renderLog() {
   }
 }
 
+function renderRollHistogram() {
+  const canShowHistogram = state.phase === "main" || state.phase === "gameover";
+  if (!canShowHistogram) state.histogramOpen = false;
+  const showHistogram = canShowHistogram && state.histogramOpen;
+
+  refs.histogramToggleBtn.classList.toggle("hidden", !canShowHistogram);
+  refs.histogramToggleBtn.classList.toggle("open", showHistogram);
+  refs.histogramToggleBtn.setAttribute("aria-pressed", showHistogram ? "true" : "false");
+  refs.histogramToggleBtn.textContent = showHistogram ? "Hide Rolls" : "Rolls";
+
+  refs.rollHistogram.classList.toggle("hidden", !showHistogram);
+  refs.rollHistogram.setAttribute("aria-hidden", showHistogram ? "false" : "true");
+  if (!showHistogram) {
+    refs.rollHistogram.innerHTML = "";
+    return;
+  }
+
+  const maxCount = Math.max(1, ...DICE_SUMS.map((sum) => state.rollHistogram[sum]));
+  const bars = DICE_SUMS.map((sum) => {
+    const count = state.rollHistogram[sum];
+    const height = count === 0 ? 0 : Math.max(6, Math.round((count / maxCount) * 100));
+    const hotClass = sum === 6 || sum === 8 ? " hot" : "";
+    return `<div class="roll-hist-col${hotClass}">
+      <div class="roll-hist-count">${count}</div>
+      <div class="roll-hist-track"><div class="roll-hist-fill" style="--bar-h:${height}%;"></div></div>
+      <div class="roll-hist-label">${sum}</div>
+    </div>`;
+  }).join("");
+
+  refs.rollHistogram.innerHTML = `<div class="roll-hist-head">
+    <span class="roll-hist-title">Roll Histogram</span>
+    <span class="roll-hist-total">Total ${state.rollCountTotal}</span>
+  </div>
+  <div class="roll-hist-bars">${bars}</div>`;
+}
+
 function renderControls() {
   updateSetupCardVisibility();
   refreshPlayerTradeTargets();
@@ -1292,18 +1757,33 @@ function renderControls() {
   const activePlayer = state.players.length > 0 ? currentPlayerObj() : null;
   refs.currentPlayerLabel.textContent =
     activePlayer ? `${activePlayer.name}${state.phase === "setup" ? " (setup)" : ""}` : "-";
-  refs.diceLabel.textContent = state.diceResult !== null ? String(state.diceResult) : "-";
+  refs.diceLabel.textContent =
+    state.isRollingDice && state.rollingDiceValue !== null
+      ? String(state.rollingDiceValue)
+      : state.diceResult !== null
+      ? String(state.diceResult)
+      : "-";
+  refs.diceLabel.classList.toggle("rolling", state.isRollingDice);
+  refs.rollBtn.classList.toggle("rolling", state.isRollingDice);
+  refs.diceRollStage.classList.toggle("hidden", !state.isRollingDice);
+  refs.diceRollStage.setAttribute("aria-hidden", state.isRollingDice ? "false" : "true");
+  if (!state.isRollingDice) refs.diceRollStage.classList.remove("rolling");
+  const showRollResultPopup = !state.isRollingDice && state.rollResultPopupValue !== null;
+  refs.rollResultPopup.classList.toggle("hidden", !showRollResultPopup);
+  refs.rollResultPopup.setAttribute("aria-hidden", showRollResultPopup ? "false" : "true");
+  if (showRollResultPopup) refs.rollResultPopup.textContent = String(state.rollResultPopupValue);
+  renderTurnClock();
   refs.statusText.textContent = state.status;
   refs.turnCallout.textContent = turnContextText(activePlayer);
 
   const inMainPhase = state.phase === "main" && state.phase !== "gameover";
-  const canRoll = inMainPhase && !state.hasRolled;
+  const canRoll = inMainPhase && !state.hasRolled && !state.isRollingDice;
   refs.rollBtn.disabled = !canRoll;
 
-  const canEndTurn = inMainPhase && state.hasRolled && !state.pendingRobberMove;
+  const canEndTurn = inMainPhase && state.hasRolled && !state.pendingRobberMove && !state.isRollingDice;
   refs.endTurnBtn.disabled = !canEndTurn;
 
-  const canTakeActions = inMainPhase && state.hasRolled && !state.pendingRobberMove;
+  const canTakeActions = inMainPhase && state.hasRolled && !state.pendingRobberMove && !state.isRollingDice;
   const canBankTrade = Boolean(activePlayer && canTakeActions && hasBankTradeOption(activePlayer));
   const canPlayerTrade = Boolean(
     activePlayer &&
@@ -1404,41 +1884,85 @@ function renderControls() {
 function render() {
   renderBoard();
   renderControls();
+  renderRollHistogram();
   renderTableStats();
   renderBuildPanel();
   renderLog();
 }
 
-async function rollDice() {
-  if (state.phase !== "main" || state.hasRolled) return;
+async function rollDice(options = {}) {
+  const auto = options.auto === true;
+  if (state.phase !== "main" || state.hasRolled || state.isRollingDice) return;
   const roll = 1 + Math.floor(Math.random() * 6) + 1 + Math.floor(Math.random() * 6);
+  const finalPair = dicePairForTotal(roll);
   state.hasRolled = true;
+  state.isRollingDice = true;
+  state.rollingDiceValue = null;
+  state.diceResult = null;
+  setStatus(`${currentPlayerObj().name} is rolling...`);
+  render();
+  configureBoardDiceThrow();
+
+  const rollSteps = 13;
+  for (let i = 0; i < rollSteps; i += 1) {
+    const dieA = randomDieValue();
+    const dieB = randomDieValue();
+    state.rollingDiceValue = dieA + dieB;
+    setBoardDiceFaces(dieA, dieB);
+    renderControls();
+    const progress = i / (rollSteps - 1);
+    const interval = 38 + Math.round(74 * progress * progress) + randomInt(0, 14);
+    await delay(interval);
+  }
+
+  setBoardDiceFaces(finalPair[0], finalPair[1]);
+  state.rollingDiceValue = roll;
+  renderControls();
+  await delay(320);
+
+  state.isRollingDice = false;
+  state.rollingDiceValue = null;
   state.diceResult = roll;
+  state.rollHistogram[roll] += 1;
+  state.rollCountTotal += 1;
+  state.rollResultPopupValue = roll;
+  renderControls();
+  renderRollHistogram();
+  await delay(1000);
+  state.rollResultPopupValue = null;
   logEvent(`${currentPlayerObj().name} rolled ${roll}.`);
   if (roll === 7) {
-    await handleRollSeven();
+    if (auto) {
+      handleRollSevenAuto(state.currentPlayer);
+    } else {
+      await handleRollSeven();
+    }
   } else {
     distributeResources(roll);
-    setStatus(`${currentPlayerObj().name}: choose actions, then end turn.`);
+    if (!auto) setStatus(`${currentPlayerObj().name}: choose actions, then end turn.`);
   }
   render();
 }
 
 function endTurn() {
-  if (state.phase !== "main" || !state.hasRolled || state.pendingRobberMove) return;
+  if (state.phase !== "main" || !state.hasRolled || state.pendingRobberMove || state.isRollingDice) return;
   state.currentPlayer = (state.currentPlayer + 1) % state.players.length;
   if (state.currentPlayer === 0) state.round += 1;
   state.hasRolled = false;
+  state.isRollingDice = false;
+  state.rollingDiceValue = null;
+  state.rollResultPopupValue = null;
   state.diceResult = null;
   state.mode = "none";
   state.tradeMenuOpen = false;
   setStatus(`${currentPlayerObj().name}: roll dice.`);
   logEvent(`Turn passed to ${currentPlayerObj().name}.`);
+  restartTurnTimer();
   render();
 }
 
 function bankTrade() {
-  if (state.phase !== "main" || !state.hasRolled || state.pendingRobberMove) return;
+  if (state.phase !== "main" || !state.hasRolled || state.pendingRobberMove || state.isRollingDice) return;
   const player = currentPlayerObj();
   const give = refs.tradeGive.value;
   const get = refs.tradeGet.value;
@@ -1462,7 +1986,7 @@ function bankTrade() {
 }
 
 function playerTrade() {
-  if (state.phase !== "main" || !state.hasRolled || state.pendingRobberMove) return;
+  if (state.phase !== "main" || !state.hasRolled || state.pendingRobberMove || state.isRollingDice) return;
   const fromIdx = state.currentPlayer;
   const toIdx = Number(refs.p2pTarget.value);
   if (!Number.isInteger(toIdx) || toIdx < 0 || toIdx >= state.players.length || toIdx === fromIdx) {
@@ -1596,6 +2120,11 @@ function bindEvents() {
   refs.restartBtn.addEventListener("click", restartGame);
   refs.rollBtn.addEventListener("click", rollDice);
   refs.endTurnBtn.addEventListener("click", endTurn);
+  refs.histogramToggleBtn.addEventListener("click", () => {
+    if (state.phase !== "main" && state.phase !== "gameover") return;
+    state.histogramOpen = !state.histogramOpen;
+    renderRollHistogram();
+  });
   refs.openTradeMenuBtn.addEventListener("click", () => {
     if (refs.tradePromptPopup.classList.contains("hidden")) return;
     state.tradeMenuOpen = true;
@@ -1636,6 +2165,12 @@ function init() {
   createNameInputs();
   initTradeSelectors();
   bindEvents();
+  refs.turnSeconds.value = String(state.turnSeconds);
+  stopTurnTimer(true);
+  state.rollHistogram = emptyRollHistogram();
+  state.rollCountTotal = 0;
+  state.histogramOpen = false;
+  setBoardDiceFaces(1, 2);
   render();
 }
 

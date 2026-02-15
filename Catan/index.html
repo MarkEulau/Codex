@@ -16,67 +16,107 @@
 
       <main class="layout">
         <section class="board-panel">
-          <div class="left-action-stack">
-            <section id="buildActionPopup" class="build-action-popup hidden">
-              <h3>Build</h3>
-              <div class="mode-grid">
-                <button class="mode-btn" data-mode="none">Clear</button>
-                <button class="mode-btn" data-mode="road">Road</button>
-                <button class="mode-btn" data-mode="settlement">Settlement</button>
-                <button class="mode-btn" data-mode="city">City</button>
-              </div>
-            </section>
-            <section id="tradePromptPopup" class="build-action-popup trade-prompt-popup hidden">
-              <h3>Trade</h3>
-              <button id="openTradeMenuBtn">Open Trade Menu</button>
-            </section>
-            <section id="tradeActionPopup" class="build-action-popup trade-action-popup hidden">
-              <div class="trade-popup-head">
+          <div class="board-stage">
+            <div class="left-action-stack">
+              <section id="buildActionPopup" class="build-action-popup hidden">
+                <h3>Build</h3>
+                <div class="mode-grid">
+                  <button class="mode-btn" data-mode="none">Clear</button>
+                  <button class="mode-btn" data-mode="road">Road</button>
+                  <button class="mode-btn" data-mode="settlement">Settlement</button>
+                  <button class="mode-btn" data-mode="city">City</button>
+                </div>
+              </section>
+              <section id="tradePromptPopup" class="build-action-popup trade-prompt-popup hidden">
                 <h3>Trade</h3>
-                <button id="closeTradeMenuBtn" type="button">Close</button>
-              </div>
-              <div class="trade-popup-grid">
-                <div id="bankTradeSection" class="trade-popup-card">
-                  <h4>Bank (4:1)</h4>
-                  <div class="row trade-popup-row">
-                    <label for="tradeGive">Give</label>
-                    <select id="tradeGive"></select>
-                  </div>
-                  <div class="row trade-popup-row">
-                    <label for="tradeGet">Get</label>
-                    <select id="tradeGet"></select>
-                  </div>
-                  <button id="tradeBtn">Trade</button>
-                  <p id="bankTradeHint" class="trade-hint"></p>
+                <button id="openTradeMenuBtn">Open Trade Menu</button>
+              </section>
+              <section id="tradeActionPopup" class="build-action-popup trade-action-popup hidden">
+                <div class="trade-popup-head">
+                  <h3>Trade</h3>
+                  <button id="closeTradeMenuBtn" type="button">Close</button>
                 </div>
+                <div class="trade-popup-grid">
+                  <div id="bankTradeSection" class="trade-popup-card">
+                    <h4>Bank (4:1)</h4>
+                    <div class="row trade-popup-row">
+                      <label for="tradeGive">Give</label>
+                      <select id="tradeGive"></select>
+                    </div>
+                    <div class="row trade-popup-row">
+                      <label for="tradeGet">Get</label>
+                      <select id="tradeGet"></select>
+                    </div>
+                    <button id="tradeBtn">Trade</button>
+                    <p id="bankTradeHint" class="trade-hint"></p>
+                  </div>
 
-                <div id="playerTradeSection" class="trade-popup-card">
-                  <h4>Player</h4>
-                  <div class="row trade-popup-row">
-                    <label for="p2pTarget">With</label>
-                    <select id="p2pTarget"></select>
+                  <div id="playerTradeSection" class="trade-popup-card">
+                    <h4>Player</h4>
+                    <div class="row trade-popup-row">
+                      <label for="p2pTarget">With</label>
+                      <select id="p2pTarget"></select>
+                    </div>
+                    <div class="row trade-row trade-popup-row">
+                      <label for="p2pGive">Give</label>
+                      <select id="p2pGive"></select>
+                      <input id="p2pGiveAmount" type="number" min="1" step="1" value="1" />
+                    </div>
+                    <div class="row trade-row trade-popup-row">
+                      <label for="p2pGet">Get</label>
+                      <select id="p2pGet"></select>
+                      <input id="p2pGetAmount" type="number" min="1" step="1" value="1" />
+                    </div>
+                    <button id="p2pTradeBtn">Propose Trade</button>
+                    <p id="p2pTradeHint" class="trade-hint"></p>
                   </div>
-                  <div class="row trade-row trade-popup-row">
-                    <label for="p2pGive">Give</label>
-                    <select id="p2pGive"></select>
-                    <input id="p2pGiveAmount" type="number" min="1" step="1" value="1" />
-                  </div>
-                  <div class="row trade-row trade-popup-row">
-                    <label for="p2pGet">Get</label>
-                    <select id="p2pGet"></select>
-                    <input id="p2pGetAmount" type="number" min="1" step="1" value="1" />
-                  </div>
-                  <button id="p2pTradeBtn">Propose Trade</button>
-                  <p id="p2pTradeHint" class="trade-hint"></p>
+                </div>
+              </section>
+            </div>
+            <div class="board-top-right">
+              <button
+                id="histogramToggleBtn"
+                class="histogram-toggle-btn hidden"
+                type="button"
+                aria-pressed="false"
+                aria-controls="rollHistogram"
+              >
+                Rolls
+              </button>
+              <div id="turnBadge" class="turn-badge hidden">
+                <span class="turn-badge-dot" id="turnBadgeDot" aria-hidden="true"></span>
+                <span id="turnBadgeText">Start a game</span>
+              </div>
+            </div>
+            <div id="turnClock" class="turn-clock hidden" aria-hidden="true">
+              <span id="turnClockText" class="turn-clock-text">0</span>
+            </div>
+            <div id="diceRollStage" class="dice-roll-stage hidden" aria-hidden="true">
+              <div id="boardDieA" class="board-die die-a" data-face="1" aria-hidden="true">
+                <div class="die-cube">
+                  <div class="die-face face-front" data-value="1"></div>
+                  <div class="die-face face-back" data-value="6"></div>
+                  <div class="die-face face-right" data-value="3"></div>
+                  <div class="die-face face-left" data-value="4"></div>
+                  <div class="die-face face-top" data-value="2"></div>
+                  <div class="die-face face-bottom" data-value="5"></div>
                 </div>
               </div>
-            </section>
+              <div id="boardDieB" class="board-die die-b" data-face="2" aria-hidden="true">
+                <div class="die-cube">
+                  <div class="die-face face-front" data-value="1"></div>
+                  <div class="die-face face-back" data-value="6"></div>
+                  <div class="die-face face-right" data-value="3"></div>
+                  <div class="die-face face-left" data-value="4"></div>
+                  <div class="die-face face-top" data-value="2"></div>
+                  <div class="die-face face-bottom" data-value="5"></div>
+                </div>
+              </div>
+            </div>
+            <div id="rollResultPopup" class="roll-result-popup hidden" aria-hidden="true"></div>
+            <aside id="rollHistogram" class="roll-histogram-panel hidden" aria-hidden="true"></aside>
+            <svg id="board" aria-label="Catan board"></svg>
           </div>
-          <div id="turnBadge" class="turn-badge hidden">
-            <span class="turn-badge-dot" id="turnBadgeDot" aria-hidden="true"></span>
-            <span id="turnBadgeText">Start a game</span>
-          </div>
-          <svg id="board" aria-label="Catan board"></svg>
           <section class="board-hud">
             <div class="hud-top">
               <h2>Table Stats</h2>
@@ -96,6 +136,10 @@
                   <option value="3">3</option>
                   <option value="4">4</option>
                 </select>
+              </div>
+              <div class="row">
+                <label for="turnSeconds">Turn Timer (sec)</label>
+                <input id="turnSeconds" type="number" min="10" step="1" value="60" />
               </div>
               <div id="nameInputs"></div>
             </div>
