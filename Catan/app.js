@@ -304,7 +304,7 @@ function turnContextText(player) {
   if (state.phase === "setup") {
     return state.setup?.expecting === "road"
       ? `${player.name}: place an adjacent road.`
-      : `${player.name}: place a settlement.`;
+      : `${player.name}: select a settlement corner, then click again to confirm.`;
   }
   if (state.phase === "gameover") return `${player.name} won the game.`;
   if (state.phase !== "main") return "Set players and start.";
@@ -648,7 +648,8 @@ function advanceSetup() {
   state.currentPlayer = setup.order[setup.turnIndex];
   setup.expecting = "settlement";
   setup.lastSettlementNode = null;
-  setStatus(`${currentPlayerObj().name}: place settlement.`);
+  setup.selectedSettlementNode = null;
+  setStatus(`${currentPlayerObj().name}: select settlement, then click again to confirm.`);
 }
 
 function beginSetup(players) {
@@ -658,6 +659,7 @@ function beginSetup(players) {
     turnIndex: 0,
     expecting: "settlement",
     lastSettlementNode: null,
+    selectedSettlementNode: null,
   };
   state.phase = "setup";
   state.currentPlayer = state.setup.order[0];
@@ -667,7 +669,7 @@ function beginSetup(players) {
   state.diceResult = null;
   state.mode = "none";
   state.tradeMenuOpen = false;
-  setStatus(`${currentPlayerObj().name}: place settlement.`);
+  setStatus(`${currentPlayerObj().name}: select settlement, then click again to confirm.`);
   logEvent("Setup started.");
 }
 
@@ -921,7 +923,22 @@ function onNodeClick(nodeIdx) {
   if (state.phase === "setup") {
     const setup = state.setup;
     if (!setup || setup.expecting !== "settlement") return;
+    const verdict = canBuildSettlement(state.currentPlayer, nodeIdx, true);
+    if (!verdict.ok) {
+      setStatus(verdict.reason);
+      render();
+      return;
+    }
+
+    if (setup.selectedSettlementNode !== nodeIdx) {
+      setup.selectedSettlementNode = nodeIdx;
+      setStatus(`${currentPlayerObj().name}: settlement selected. Click again to confirm.`);
+      render();
+      return;
+    }
+
     if (buildSettlement(state.currentPlayer, nodeIdx, { free: true, setup: true })) {
+      setup.selectedSettlementNode = null;
       setup.expecting = "road";
       setup.lastSettlementNode = nodeIdx;
       setStatus(`${currentPlayerObj().name}: place adjacent road.`);
@@ -1093,12 +1110,21 @@ function renderBoard() {
 
   for (const node of state.nodes) {
     const clickable = isClickableNode(node.idx);
+    const setupSelected = Boolean(
+      state.phase === "setup" &&
+        state.setup &&
+        state.setup.expecting === "settlement" &&
+        state.setup.selectedSettlementNode === node.idx
+    );
     if (node.owner === null) {
+      const classes = ["node", "node-empty"];
+      if (clickable) classes.push("clickable");
+      if (setupSelected) classes.push("selected");
       const circle = el("circle", {
         cx: sx(node.x),
         cy: sy(node.y),
         r: 6,
-        class: `node node-empty ${clickable ? "clickable" : ""}`,
+        class: classes.join(" "),
       });
       circle.addEventListener("click", () => onNodeClick(node.idx));
       nodeLayer.appendChild(circle);
