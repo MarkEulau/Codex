@@ -40,6 +40,8 @@ const BOARD_RADIUS = 2;
 const HEX_SIZE = 74;
 const BOARD_PADDING = 36;
 const SVG_NS = "http://www.w3.org/2000/svg";
+const ONLINE_MAX_PLAYERS = 4;
+const ROOM_CODE_REGEX = /^[A-Z0-9]{4,6}$/;
 
 const state = {
   players: [],
@@ -88,6 +90,15 @@ const refs = {
   nameInputs: document.getElementById("nameInputs"),
   startBtn: document.getElementById("startBtn"),
   restartBtn: document.getElementById("restartBtn"),
+  onlineName: document.getElementById("onlineName"),
+  roomCodeInput: document.getElementById("roomCodeInput"),
+  createRoomBtn: document.getElementById("createRoomBtn"),
+  joinRoomBtn: document.getElementById("joinRoomBtn"),
+  copyRoomCodeBtn: document.getElementById("copyRoomCodeBtn"),
+  leaveRoomBtn: document.getElementById("leaveRoomBtn"),
+  roomStatusText: document.getElementById("roomStatusText"),
+  roomCodeDisplay: document.getElementById("roomCodeDisplay"),
+  roomPlayersList: document.getElementById("roomPlayersList"),
   rollBtn: document.getElementById("rollBtn"),
   endTurnBtn: document.getElementById("endTurnBtn"),
   tradeBtn: document.getElementById("tradeBtn"),
@@ -131,6 +142,20 @@ const refs = {
 
 let actionModalResolver = null;
 let turnTimerInterval = null;
+let pendingRoomCommand = null;
+let remoteSyncVersion = 0;
+let roomStatusOverride = "";
+
+const onlineState = {
+  socket: null,
+  connected: false,
+  clientId: "",
+  roomCode: "",
+  hostId: "",
+  started: false,
+  players: [],
+  seatMap: [],
+};
 
 function resourceMap(init = 0) {
   const out = {};
@@ -252,6 +277,459 @@ function logEvent(msg) {
   if (state.log.length > 16) state.log.length = 16;
 }
 
+function sanitizePlayerName(raw, fallback = "Player") {
+  const value = String(raw ?? "").trim();
+  if (!value) return fallback;
+  return value.slice(0, 18);
+}
+
+function isOnlineRoomActive() {
+  return onlineState.roomCode.length > 0;
+}
+
+function isOnlineGameStarted() {
+  return isOnlineRoomActive() && onlineState.started;
+}
+
+function isRoomHost() {
+  return isOnlineRoomActive() && onlineState.clientId !== "" && onlineState.clientId === onlineState.hostId;
+}
+
+function localSeatIndex() {
+  if (!isOnlineRoomActive()) return -1;
+  return onlineState.seatMap.indexOf(onlineState.clientId);
+}
+
+function currentTurnOwnerDisconnected() {
+  if (!isOnlineGameStarted()) return false;
+  const ownerId = onlineState.seatMap[state.currentPlayer];
+  if (!ownerId) return false;
+  const owner = onlineState.players.find((player) => player.id === ownerId);
+  return Boolean(owner && owner.connected === false);
+}
+
+function localControlsCurrentTurn() {
+  if (!isOnlineGameStarted()) return true;
+  if (localSeatIndex() === state.currentPlayer) return true;
+  return isRoomHost() && currentTurnOwnerDisconnected();
+}
+
+function currentTurnOwnerName() {
+  if (state.currentPlayer < 0 || state.currentPlayer >= state.players.length) return "another player";
+  return state.players[state.currentPlayer].name;
+}
+
+function setRoomStatusOverride(msg) {
+  roomStatusOverride = String(msg || "");
+}
+
+function socketEndpoint() {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${window.location.host}`;
+}
+
+function sendSocketMessage(type, payload = {}) {
+  if (!onlineState.socket || onlineState.socket.readyState !== WebSocket.OPEN) return false;
+  onlineState.socket.send(JSON.stringify({ type, ...payload }));
+  return true;
+}
+
+function queueRoomCommand(type, payload = {}) {
+  pendingRoomCommand = { type, payload };
+  if (onlineState.socket && onlineState.socket.readyState === WebSocket.OPEN) {
+    const command = pendingRoomCommand;
+    pendingRoomCommand = null;
+    sendSocketMessage(command.type, command.payload);
+    return;
+  }
+  if (onlineState.socket && onlineState.socket.readyState === WebSocket.CONNECTING) return;
+
+  onlineState.socket = new WebSocket(socketEndpoint());
+  onlineState.socket.addEventListener("open", () => {
+    onlineState.connected = true;
+    if (pendingRoomCommand) {
+      const command = pendingRoomCommand;
+      pendingRoomCommand = null;
+      sendSocketMessage(command.type, command.payload);
+    }
+    renderRoomPanel();
+    renderControls();
+  });
+  onlineState.socket.addEventListener("message", (event) => {
+    handleSocketMessage(event.data);
+  });
+  onlineState.socket.addEventListener("close", () => {
+    onlineState.connected = false;
+    onlineState.socket = null;
+    pendingRoomCommand = null;
+    onlineState.roomCode = "";
+    onlineState.hostId = "";
+    onlineState.started = false;
+    onlineState.players = [];
+    onlineState.seatMap = [];
+    remoteSyncVersion = 0;
+    setRoomStatusOverride("Disconnected from server.");
+    renderRoomPanel();
+    renderControls();
+  });
+  onlineState.socket.addEventListener("error", () => {
+    setRoomStatusOverride("Socket error. Check server status.");
+    renderRoomPanel();
+  });
+}
+
+function handleSocketMessage(raw) {
+  let msg;
+  try {
+    msg = JSON.parse(raw);
+  } catch (_err) {
+    return;
+  }
+  if (!msg || typeof msg !== "object") return;
+
+  if (msg.type === "welcome") {
+    onlineState.clientId = String(msg.clientId ?? "");
+    renderRoomPanel();
+    return;
+  }
+
+  if (msg.type === "room_error") {
+    setRoomStatusOverride(String(msg.message || "Room error."));
+    renderRoomPanel();
+    return;
+  }
+
+  if (msg.type !== "room_state" || !msg.room || typeof msg.room !== "object") return;
+
+  const room = msg.room;
+  roomStatusOverride = "";
+  onlineState.roomCode = String(room.code || "");
+  onlineState.hostId = String(room.hostId || "");
+  onlineState.started = room.started === true;
+  onlineState.players = Array.isArray(room.players) ? room.players.slice() : [];
+  onlineState.seatMap = Array.isArray(room.seatMap) ? room.seatMap.slice() : [];
+
+  if (onlineState.started && room.gameState && typeof room.version === "number" && room.version >= remoteSyncVersion) {
+    if (room.version > remoteSyncVersion || state.phase === "pregame") {
+      remoteSyncVersion = room.version;
+      applySerializedGameState(room.gameState);
+      render();
+    }
+  } else if (!onlineState.started) {
+    remoteSyncVersion = 0;
+  }
+
+  renderRoomPanel();
+  renderControls();
+}
+
+function createSerializablePlayer(player, idx) {
+  return {
+    idx,
+    name: player.name,
+    color: player.color,
+    hand: { ...player.hand },
+    roads: Array.from(player.roads),
+    settlements: Array.from(player.settlements),
+    cities: Array.from(player.cities),
+  };
+}
+
+function serializeGameState() {
+  return {
+    players: state.players.map((player, idx) => createSerializablePlayer(player, idx)),
+    tiles: state.tiles.map((tile) => ({
+      ...tile,
+      corners: tile.corners.map((corner) => ({ ...corner })),
+      nodes: tile.nodes.slice(),
+    })),
+    nodes: state.nodes.map((node) => ({
+      ...node,
+      hexes: node.hexes.slice(),
+      edges: Array.from(node.edges),
+    })),
+    edges: state.edges.map((edge) => ({ ...edge })),
+    geometry: state.geometry ? { ...state.geometry } : null,
+    robberTile: state.robberTile,
+    phase: state.phase,
+    setup: state.setup
+      ? {
+          order: state.setup.order.slice(),
+          turnIndex: state.setup.turnIndex,
+          expecting: state.setup.expecting,
+          lastSettlementNode: state.setup.lastSettlementNode,
+          selectedSettlementNode: state.setup.selectedSettlementNode,
+        }
+      : null,
+    currentPlayer: state.currentPlayer,
+    round: state.round,
+    hasRolled: state.hasRolled,
+    diceResult: state.diceResult,
+    rollHistogram: { ...state.rollHistogram },
+    rollCountTotal: state.rollCountTotal,
+    turnSeconds: state.turnSeconds,
+    turnTimerActive: state.turnTimerActive,
+    turnTimerRemainingMs: state.turnTimerRemainingMs,
+    pendingRobberMove: state.pendingRobberMove,
+    status: state.status,
+    log: state.log.slice(),
+  };
+}
+
+function deserializePlayer(serialized, idx) {
+  const hand = resourceMap(0);
+  if (serialized && serialized.hand) {
+    for (const resource of RESOURCES) {
+      const value = Number(serialized.hand[resource]);
+      hand[resource] = Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+    }
+  }
+
+  return {
+    name: sanitizePlayerName(serialized?.name, `Player ${idx + 1}`),
+    color: serialized?.color || PLAYER_COLORS[idx] || "#8f7b61",
+    hand,
+    roads: new Set(Array.isArray(serialized?.roads) ? serialized.roads : []),
+    settlements: new Set(Array.isArray(serialized?.settlements) ? serialized.settlements : []),
+    cities: new Set(Array.isArray(serialized?.cities) ? serialized.cities : []),
+  };
+}
+
+function applySerializedGameState(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") return;
+
+  stopTurnTimer(false);
+  if (actionModalResolver) closeActionModal(null);
+
+  state.players = Array.isArray(snapshot.players) ? snapshot.players.map(deserializePlayer) : [];
+  state.tiles = Array.isArray(snapshot.tiles)
+    ? snapshot.tiles.map((tile, idx) => ({
+        idx,
+        q: Number(tile.q),
+        r: Number(tile.r),
+        resource: tile.resource,
+        number: tile.number === null ? null : Number(tile.number),
+        cx: Number(tile.cx),
+        cy: Number(tile.cy),
+        corners: Array.isArray(tile.corners) ? tile.corners.map((corner) => ({ x: Number(corner.x), y: Number(corner.y) })) : [],
+        nodes: Array.isArray(tile.nodes) ? tile.nodes.slice() : [],
+      }))
+    : [];
+  state.nodes = Array.isArray(snapshot.nodes)
+    ? snapshot.nodes.map((node, idx) => ({
+        idx,
+        x: Number(node.x),
+        y: Number(node.y),
+        hexes: Array.isArray(node.hexes) ? node.hexes.slice() : [],
+        edges: new Set(Array.isArray(node.edges) ? node.edges : []),
+        owner: Number.isInteger(node.owner) ? node.owner : null,
+        isCity: node.isCity === true,
+      }))
+    : [];
+  state.edges = Array.isArray(snapshot.edges)
+    ? snapshot.edges.map((edge, idx) => ({
+        idx,
+        a: Number(edge.a),
+        b: Number(edge.b),
+        owner: Number.isInteger(edge.owner) ? edge.owner : null,
+      }))
+    : [];
+  state.geometry = snapshot.geometry
+    ? {
+        minX: Number(snapshot.geometry.minX),
+        minY: Number(snapshot.geometry.minY),
+        width: Number(snapshot.geometry.width),
+        height: Number(snapshot.geometry.height),
+      }
+    : null;
+  state.robberTile = Number.isInteger(snapshot.robberTile) ? snapshot.robberTile : -1;
+  state.phase = snapshot.phase || "pregame";
+  state.setup = snapshot.setup
+    ? {
+        order: Array.isArray(snapshot.setup.order) ? snapshot.setup.order.slice() : [],
+        turnIndex: Number(snapshot.setup.turnIndex) || 0,
+        expecting: snapshot.setup.expecting || "settlement",
+        lastSettlementNode:
+          snapshot.setup.lastSettlementNode === null ? null : Number(snapshot.setup.lastSettlementNode),
+        selectedSettlementNode:
+          snapshot.setup.selectedSettlementNode === null ? null : Number(snapshot.setup.selectedSettlementNode),
+      }
+    : null;
+  state.currentPlayer = Number(snapshot.currentPlayer) || 0;
+  state.round = Number(snapshot.round) || 1;
+  state.hasRolled = snapshot.hasRolled === true;
+  state.diceResult = snapshot.diceResult === null ? null : Number(snapshot.diceResult);
+  state.isRollingDice = false;
+  state.rollingDiceValue = null;
+  state.rollResultPopupValue = null;
+  state.rollHistogram = emptyRollHistogram();
+  if (snapshot.rollHistogram && typeof snapshot.rollHistogram === "object") {
+    for (const sum of DICE_SUMS) {
+      const count = Number(snapshot.rollHistogram[sum]);
+      state.rollHistogram[sum] = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+    }
+  }
+  state.rollCountTotal = Number(snapshot.rollCountTotal) || 0;
+  state.turnSeconds = clampTurnSeconds(snapshot.turnSeconds ?? DEFAULT_TURN_SECONDS);
+  refs.turnSeconds.value = String(state.turnSeconds);
+  state.turnTimerRemainingMs = Math.max(0, Number(snapshot.turnTimerRemainingMs) || state.turnSeconds * 1000);
+  state.turnTimeoutBusy = false;
+  state.pendingRobberMove = snapshot.pendingRobberMove === true;
+  state.mode = "none";
+  state.tradeMenuOpen = false;
+  state.histogramOpen = false;
+  state.status = String(snapshot.status || "Connected.");
+  state.log = Array.isArray(snapshot.log) ? snapshot.log.slice(0, 16) : [];
+
+  if (snapshot.turnTimerActive === true) {
+    startTurnTimerWithRemaining(state.turnTimerRemainingMs);
+  } else {
+    state.turnTimerActive = false;
+    renderTurnClock();
+  }
+}
+
+function publishOnlineState(options = {}) {
+  if (!isOnlineGameStarted()) return;
+  if (!onlineState.connected) return;
+  if (!options.force && !localControlsCurrentTurn()) return;
+  sendSocketMessage("state_sync", { gameState: serializeGameState() });
+}
+
+function assertLocalTurnControl() {
+  if (!isOnlineGameStarted()) return true;
+  if (localControlsCurrentTurn()) return true;
+  setStatus(`It is ${currentTurnOwnerName()}'s turn.`);
+  render();
+  return false;
+}
+
+function localDisplayName() {
+  if (refs.onlineName.value.trim()) return sanitizePlayerName(refs.onlineName.value, "Player");
+  const firstNameInput = refs.nameInputs.querySelector("input");
+  if (firstNameInput) return sanitizePlayerName(firstNameInput.value, "Player");
+  return "Player";
+}
+
+function requestCreateRoom() {
+  if (isOnlineRoomActive()) return;
+  roomStatusOverride = "";
+  queueRoomCommand("create_room", { name: localDisplayName() });
+}
+
+function requestJoinRoom() {
+  if (isOnlineRoomActive()) return;
+  const code = refs.roomCodeInput.value.trim().toUpperCase();
+  refs.roomCodeInput.value = code;
+  if (!ROOM_CODE_REGEX.test(code)) {
+    setRoomStatusOverride("Room codes are 4-6 letters/numbers.");
+    renderRoomPanel();
+    return;
+  }
+  roomStatusOverride = "";
+  queueRoomCommand("join_room", { code, name: localDisplayName() });
+}
+
+function requestLeaveRoom() {
+  if (!isOnlineRoomActive()) return;
+  sendSocketMessage("leave_room");
+  onlineState.roomCode = "";
+  onlineState.hostId = "";
+  onlineState.started = false;
+  onlineState.players = [];
+  onlineState.seatMap = [];
+  remoteSyncVersion = 0;
+  setRoomStatusOverride("Left room.");
+  renderRoomPanel();
+  renderControls();
+}
+
+function copyRoomCode() {
+  if (!isOnlineRoomActive()) return;
+  const code = onlineState.roomCode;
+  if (!navigator.clipboard || !navigator.clipboard.writeText) {
+    setRoomStatusOverride(`Room code: ${code}`);
+    renderRoomPanel();
+    return;
+  }
+  navigator.clipboard.writeText(code).then(
+    () => {
+      setRoomStatusOverride("Room code copied.");
+      renderRoomPanel();
+    },
+    () => {
+      setRoomStatusOverride(`Room code: ${code}`);
+      renderRoomPanel();
+    }
+  );
+}
+
+function renderRoomPanel() {
+  let statusText = "";
+  const inRoom = isOnlineRoomActive();
+  const connectedNoRoom = onlineState.connected && !inRoom;
+  refs.copyRoomCodeBtn.classList.toggle("hidden", !inRoom);
+  refs.leaveRoomBtn.classList.toggle("hidden", !inRoom);
+  refs.roomCodeDisplay.classList.toggle("hidden", !inRoom);
+  refs.roomPlayersList.classList.toggle("hidden", !inRoom || onlineState.players.length === 0);
+  refs.roomCodeDisplay.textContent = inRoom ? `Code: ${onlineState.roomCode}` : "";
+
+  refs.onlineName.disabled = inRoom;
+  refs.roomCodeInput.disabled = inRoom;
+  refs.createRoomBtn.disabled = inRoom;
+  refs.joinRoomBtn.disabled = inRoom;
+
+  refs.playerCount.disabled = inRoom;
+  refs.nameInputs.querySelectorAll("input").forEach((input) => {
+    input.disabled = inRoom;
+  });
+  refs.turnSeconds.disabled = inRoom && !isRoomHost();
+
+  refs.roomPlayersList.innerHTML = "";
+  if (inRoom) {
+    onlineState.players.forEach((player, idx) => {
+      const li = document.createElement("li");
+      const mine = player.id === onlineState.clientId ? " (you)" : "";
+      const host = player.id === onlineState.hostId ? " [host]" : "";
+      const seat = onlineState.seatMap[idx] ? ` P${idx + 1}` : "";
+      const offline = player.connected === false ? " (offline)" : "";
+      li.textContent = `${player.name}${mine}${host}${seat}${offline}`;
+      if (player.id === onlineState.clientId) li.classList.add("current");
+      refs.roomPlayersList.appendChild(li);
+    });
+  }
+
+  if (inRoom && !onlineState.started) {
+    if (isRoomHost()) {
+      if (onlineState.players.length < 3) {
+        statusText = "Host: waiting for at least 3 players.";
+      } else if (onlineState.players.length > ONLINE_MAX_PLAYERS) {
+        statusText = "Host: max 4 players.";
+      } else {
+        statusText = "Host: room ready. Start game when ready.";
+      }
+    } else {
+      statusText = "Waiting for host to start the game.";
+    }
+  } else if (inRoom && onlineState.started) {
+    const seat = localSeatIndex();
+    if (seat >= 0) {
+      statusText = `Connected as Player ${seat + 1}.`;
+    } else {
+      statusText = "Connected as spectator.";
+    }
+  } else if (connectedNoRoom) {
+    statusText = "Connected. Create or join a room.";
+  } else if (!onlineState.connected) {
+    statusText = "Offline mode.";
+  }
+
+  if (roomStatusOverride) {
+    statusText = roomStatusOverride;
+  }
+  refs.roomStatusText.textContent = statusText || "Offline mode.";
+}
+
 function parsePositiveInt(raw) {
   const num = Number(raw);
   if (!Number.isInteger(num) || num < 1) return null;
@@ -308,13 +786,19 @@ function stopTurnTimer(resetToFull = false) {
   renderTurnClock();
 }
 
-function restartTurnTimer() {
-  stopTurnTimer(true);
+function canRunTurnTimeoutAutomation() {
+  if (state.phase !== "setup" && state.phase !== "main") return false;
+  if (!isOnlineGameStarted()) return true;
+  return localControlsCurrentTurn();
+}
+
+function startTurnTimerWithRemaining(remainingMs) {
+  stopTurnTimer(false);
   if (!shouldDisplayTurnClock()) return;
 
+  state.turnTimerRemainingMs = Math.max(0, Math.floor(remainingMs));
   state.turnTimerActive = true;
-  state.turnTimerEndMs = Date.now() + state.turnSeconds * 1000;
-  state.turnTimerRemainingMs = state.turnSeconds * 1000;
+  state.turnTimerEndMs = Date.now() + state.turnTimerRemainingMs;
   renderTurnClock();
 
   turnTimerInterval = window.setInterval(() => {
@@ -323,9 +807,13 @@ function restartTurnTimer() {
     renderTurnClock();
     if (state.turnTimerRemainingMs <= 0) {
       stopTurnTimer(false);
-      void handleTurnTimeout();
+      if (canRunTurnTimeoutAutomation()) void handleTurnTimeout();
     }
   }, 100);
+}
+
+function restartTurnTimer() {
+  startTurnTimerWithRemaining(state.turnSeconds * 1000);
 }
 
 function delay(ms) {
@@ -933,8 +1421,10 @@ function autoCompleteSetupTurn() {
 }
 
 async function handleTurnTimeout() {
+  if (!canRunTurnTimeoutAutomation()) return;
   if (state.turnTimeoutBusy) return;
   state.turnTimeoutBusy = true;
+  const shouldSync = isOnlineGameStarted();
   if (actionModalResolver) closeActionModal(null);
 
   try {
@@ -944,6 +1434,7 @@ async function handleTurnTimeout() {
         restartTurnTimer();
       }
       render();
+      if (shouldSync) publishOnlineState({ force: true });
       return;
     }
 
@@ -973,6 +1464,7 @@ async function handleTurnTimeout() {
     } else {
       if (state.phase === "main" && !state.turnTimerActive) restartTurnTimer();
       render();
+      if (shouldSync) publishOnlineState({ force: true });
     }
   } finally {
     state.turnTimeoutBusy = false;
@@ -1045,8 +1537,48 @@ function beginSetup(players) {
   restartTurnTimer();
 }
 
-function startGame() {
-  const playerCount = Number(refs.playerCount.value);
+function startGame(options = {}) {
+  const fromRoom = options.fromRoom === true;
+  const providedNames = Array.isArray(options.playerNames) ? options.playerNames : null;
+  const shouldSync = options.sync !== false;
+
+  if (isOnlineRoomActive() && !fromRoom) {
+    if (!isRoomHost()) {
+      setStatus("Only the room host can start.");
+      render();
+      return;
+    }
+    if (onlineState.players.length < 3 || onlineState.players.length > ONLINE_MAX_PLAYERS) {
+      setStatus("Online rooms require 3-4 players.");
+      render();
+      return;
+    }
+    state.turnSeconds = clampTurnSeconds(refs.turnSeconds.value);
+    refs.turnSeconds.value = String(state.turnSeconds);
+    onlineState.started = true;
+    onlineState.seatMap = onlineState.players.map((player) => player.id);
+    remoteSyncVersion = 0;
+    if (!sendSocketMessage("start_game", { turnSeconds: state.turnSeconds })) {
+      onlineState.started = false;
+      setStatus("Unable to start room game: socket is not connected.");
+      render();
+      return;
+    }
+    startGame({
+      fromRoom: true,
+      playerNames: onlineState.players.map((player) => player.name),
+      sync: true,
+    });
+    return;
+  }
+
+  const playerCount = providedNames ? providedNames.length : Number(refs.playerCount.value);
+  if (playerCount < 3 || playerCount > ONLINE_MAX_PLAYERS) {
+    setStatus("This prototype supports 3-4 players.");
+    render();
+    return;
+  }
+
   state.turnSeconds = clampTurnSeconds(refs.turnSeconds.value);
   refs.turnSeconds.value = String(state.turnSeconds);
   state.turnTimerRemainingMs = state.turnSeconds * 1000;
@@ -1054,10 +1586,16 @@ function startGame() {
   state.histogramOpen = false;
   stopTurnTimer(true);
   const names = [];
-  const inputs = refs.nameInputs.querySelectorAll("input");
-  for (let i = 0; i < playerCount; i += 1) {
-    const name = (inputs[i]?.value || "").trim() || `Player ${i + 1}`;
-    names.push(name);
+  if (providedNames) {
+    for (let i = 0; i < playerCount; i += 1) {
+      names.push(sanitizePlayerName(providedNames[i], `Player ${i + 1}`));
+    }
+  } else {
+    const inputs = refs.nameInputs.querySelectorAll("input");
+    for (let i = 0; i < playerCount; i += 1) {
+      const name = sanitizePlayerName(inputs[i]?.value, `Player ${i + 1}`);
+      names.push(name);
+    }
   }
 
   state.players = names.map((name, idx) => ({
@@ -1075,10 +1613,17 @@ function startGame() {
   logEvent(`New game: ${names.join(", ")}.`);
   beginSetup(state.players);
   render();
+
+  if (shouldSync && isOnlineGameStarted()) publishOnlineState({ force: true });
 }
 
 function restartGame() {
   if (state.phase === "pregame") return;
+  if (isOnlineRoomActive() && !isRoomHost()) {
+    setStatus("Only the host can restart this room game.");
+    render();
+    return;
+  }
   const confirmed = window.confirm("Restart the current game? All progress will be lost.");
   if (!confirmed) return;
 
@@ -1094,7 +1639,15 @@ function restartGame() {
     });
   }
 
-  startGame();
+  if (isOnlineRoomActive()) {
+    startGame({
+      fromRoom: true,
+      playerNames: onlineState.players.map((player) => player.name),
+      sync: true,
+    });
+    return;
+  }
+  startGame({ sync: false });
 }
 
 function buildBoard() {
@@ -1268,6 +1821,7 @@ function appendResourceIcon(layer, tile) {
 }
 
 function isClickableNode(nodeIdx) {
+  if (isOnlineGameStarted() && !localControlsCurrentTurn()) return false;
   if (state.phase === "setup") {
     const setup = state.setup;
     if (!setup || setup.expecting !== "settlement") return false;
@@ -1281,6 +1835,7 @@ function isClickableNode(nodeIdx) {
 }
 
 function isClickableEdge(edgeIdx) {
+  if (isOnlineGameStarted() && !localControlsCurrentTurn()) return false;
   if (state.phase === "setup") {
     const setup = state.setup;
     if (!setup || setup.expecting !== "road" || setup.lastSettlementNode === null) return false;
@@ -1292,12 +1847,16 @@ function isClickableEdge(edgeIdx) {
 }
 
 function isClickableTile(tileIdx) {
+  if (isOnlineGameStarted() && !localControlsCurrentTurn()) return false;
   if (state.phase !== "main" || state.phase === "gameover") return false;
   if (!(state.pendingRobberMove || state.mode === "robber")) return false;
   return tileIdx !== state.robberTile;
 }
 
 function onNodeClick(nodeIdx) {
+  if (!assertLocalTurnControl()) return;
+  const shouldSync = isOnlineGameStarted();
+
   if (state.phase === "setup") {
     const setup = state.setup;
     if (!setup || setup.expecting !== "settlement") return;
@@ -1320,6 +1879,7 @@ function onNodeClick(nodeIdx) {
       setup.expecting = "road";
       setup.lastSettlementNode = nodeIdx;
       setStatus(`${currentPlayerObj().name}: place adjacent road.`);
+      if (shouldSync) publishOnlineState({ force: true });
     }
     render();
     return;
@@ -1337,15 +1897,20 @@ function onNodeClick(nodeIdx) {
     return;
   }
 
+  let changed = false;
   if (state.mode === "settlement") {
-    buildSettlement(state.currentPlayer, nodeIdx);
+    changed = buildSettlement(state.currentPlayer, nodeIdx);
   } else if (state.mode === "city") {
-    buildCity(state.currentPlayer, nodeIdx);
+    changed = buildCity(state.currentPlayer, nodeIdx);
   }
   render();
+  if (changed && shouldSync) publishOnlineState({ force: true });
 }
 
 function onEdgeClick(edgeIdx) {
+  if (!assertLocalTurnControl()) return;
+  const shouldSync = isOnlineGameStarted();
+
   if (state.phase === "setup") {
     const setup = state.setup;
     if (!setup || setup.expecting !== "road" || setup.lastSettlementNode === null) return;
@@ -1356,6 +1921,7 @@ function onEdgeClick(edgeIdx) {
         logEvent(`${currentPlayerObj().name} gained starting resources.`);
       }
       advanceSetup();
+      if (shouldSync) publishOnlineState({ force: true });
     }
     render();
     return;
@@ -1372,11 +1938,14 @@ function onEdgeClick(edgeIdx) {
     render();
     return;
   }
-  buildRoad(state.currentPlayer, edgeIdx);
+  const changed = buildRoad(state.currentPlayer, edgeIdx);
   render();
+  if (changed && shouldSync) publishOnlineState({ force: true });
 }
 
 async function onTileClick(tileIdx) {
+  if (!assertLocalTurnControl()) return;
+  const shouldSync = isOnlineGameStarted();
   if (state.phase !== "main") return;
   if (!(state.pendingRobberMove || state.mode === "robber")) return;
   if (!(await moveRobber(state.currentPlayer, tileIdx))) {
@@ -1389,6 +1958,7 @@ async function onTileClick(tileIdx) {
     setStatus("Robber moved. Continue your turn.");
   }
   render();
+  if (shouldSync) publishOnlineState({ force: true });
 }
 
 function renderPlaceholderBoard() {
@@ -1751,10 +2321,27 @@ function renderRollHistogram() {
 }
 
 function renderControls() {
+  renderRoomPanel();
   updateSetupCardVisibility();
+  if (isOnlineRoomActive()) {
+    refs.startBtn.textContent = "Start Room Game";
+    const roomReady =
+      isRoomHost() &&
+      !onlineState.started &&
+      onlineState.players.length >= 3 &&
+      onlineState.players.length <= ONLINE_MAX_PLAYERS;
+    refs.startBtn.disabled = !roomReady;
+    refs.restartBtn.disabled = !isRoomHost();
+  } else {
+    refs.startBtn.textContent = "Start New Game";
+    refs.startBtn.disabled = false;
+    refs.restartBtn.disabled = false;
+  }
+
   refreshPlayerTradeTargets();
   refs.phaseLabel.textContent = phaseLabel();
   const activePlayer = state.players.length > 0 ? currentPlayerObj() : null;
+  const controlsLockedToOtherPlayer = isOnlineGameStarted() && !localControlsCurrentTurn();
   refs.currentPlayerLabel.textContent =
     activePlayer ? `${activePlayer.name}${state.phase === "setup" ? " (setup)" : ""}` : "-";
   refs.diceLabel.textContent =
@@ -1777,13 +2364,15 @@ function renderControls() {
   refs.turnCallout.textContent = turnContextText(activePlayer);
 
   const inMainPhase = state.phase === "main" && state.phase !== "gameover";
-  const canRoll = inMainPhase && !state.hasRolled && !state.isRollingDice;
+  const canRoll = inMainPhase && !controlsLockedToOtherPlayer && !state.hasRolled && !state.isRollingDice;
   refs.rollBtn.disabled = !canRoll;
 
-  const canEndTurn = inMainPhase && state.hasRolled && !state.pendingRobberMove && !state.isRollingDice;
+  const canEndTurn =
+    inMainPhase && !controlsLockedToOtherPlayer && state.hasRolled && !state.pendingRobberMove && !state.isRollingDice;
   refs.endTurnBtn.disabled = !canEndTurn;
 
-  const canTakeActions = inMainPhase && state.hasRolled && !state.pendingRobberMove && !state.isRollingDice;
+  const canTakeActions =
+    inMainPhase && !controlsLockedToOtherPlayer && state.hasRolled && !state.pendingRobberMove && !state.isRollingDice;
   const canBankTrade = Boolean(activePlayer && canTakeActions && hasBankTradeOption(activePlayer));
   const canPlayerTrade = Boolean(
     activePlayer &&
@@ -1892,6 +2481,8 @@ function render() {
 
 async function rollDice(options = {}) {
   const auto = options.auto === true;
+  if (!auto && !assertLocalTurnControl()) return;
+  const shouldSync = isOnlineGameStarted();
   if (state.phase !== "main" || state.hasRolled || state.isRollingDice) return;
   const roll = 1 + Math.floor(Math.random() * 6) + 1 + Math.floor(Math.random() * 6);
   const finalPair = dicePairForTotal(roll);
@@ -1942,9 +2533,12 @@ async function rollDice(options = {}) {
     if (!auto) setStatus(`${currentPlayerObj().name}: choose actions, then end turn.`);
   }
   render();
+  if (shouldSync) publishOnlineState({ force: true });
 }
 
 function endTurn() {
+  if (!assertLocalTurnControl()) return;
+  const shouldSync = isOnlineGameStarted();
   if (state.phase !== "main" || !state.hasRolled || state.pendingRobberMove || state.isRollingDice) return;
   state.currentPlayer = (state.currentPlayer + 1) % state.players.length;
   if (state.currentPlayer === 0) state.round += 1;
@@ -1959,9 +2553,12 @@ function endTurn() {
   logEvent(`Turn passed to ${currentPlayerObj().name}.`);
   restartTurnTimer();
   render();
+  if (shouldSync) publishOnlineState({ force: true });
 }
 
 function bankTrade() {
+  if (!assertLocalTurnControl()) return;
+  const shouldSync = isOnlineGameStarted();
   if (state.phase !== "main" || !state.hasRolled || state.pendingRobberMove || state.isRollingDice) return;
   const player = currentPlayerObj();
   const give = refs.tradeGive.value;
@@ -1983,9 +2580,12 @@ function bankTrade() {
   logEvent(`${player.name} traded 4 ${give} for 1 ${get}.`);
   setStatus(`${player.name} traded with the bank.`);
   render();
+  if (shouldSync) publishOnlineState({ force: true });
 }
 
 function playerTrade() {
+  if (!assertLocalTurnControl()) return;
+  const shouldSync = isOnlineGameStarted();
   if (state.phase !== "main" || !state.hasRolled || state.pendingRobberMove || state.isRollingDice) return;
   const fromIdx = state.currentPlayer;
   const toIdx = Number(refs.p2pTarget.value);
@@ -2048,6 +2648,7 @@ function playerTrade() {
   logEvent(`${from.name} traded ${giveAmt} ${giveRes} for ${getAmt} ${getRes} with ${to.name}.`);
   setStatus("Trade completed.");
   render();
+  if (shouldSync) publishOnlineState({ force: true });
 }
 
 function initTradeSelectors() {
@@ -2118,6 +2719,16 @@ function bindEvents() {
   refs.playerCount.addEventListener("change", createNameInputs);
   refs.startBtn.addEventListener("click", startGame);
   refs.restartBtn.addEventListener("click", restartGame);
+  refs.createRoomBtn.addEventListener("click", requestCreateRoom);
+  refs.joinRoomBtn.addEventListener("click", requestJoinRoom);
+  refs.copyRoomCodeBtn.addEventListener("click", copyRoomCode);
+  refs.leaveRoomBtn.addEventListener("click", requestLeaveRoom);
+  refs.roomCodeInput.addEventListener("input", () => {
+    refs.roomCodeInput.value = refs.roomCodeInput.value.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  });
+  refs.onlineName.addEventListener("change", () => {
+    refs.onlineName.value = sanitizePlayerName(refs.onlineName.value, "Player");
+  });
   refs.rollBtn.addEventListener("click", rollDice);
   refs.endTurnBtn.addEventListener("click", endTurn);
   refs.histogramToggleBtn.addEventListener("click", () => {
@@ -2148,6 +2759,7 @@ function bindEvents() {
 
   refs.modeButtons.forEach((btn) => {
     btn.addEventListener("click", () => {
+      if (!assertLocalTurnControl()) return;
       if (state.phase !== "main") return;
       if (refs.buildActionPopup.classList.contains("hidden")) return;
       state.mode = btn.dataset.mode;
@@ -2165,6 +2777,7 @@ function init() {
   createNameInputs();
   initTradeSelectors();
   bindEvents();
+  refs.onlineName.value = "Player 1";
   refs.turnSeconds.value = String(state.turnSeconds);
   stopTurnTimer(true);
   state.rollHistogram = emptyRollHistogram();

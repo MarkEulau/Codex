@@ -147,6 +147,29 @@
             <button id="restartBtn" class="hidden">Restart Game</button>
           </section>
 
+          <section class="card" id="roomCard">
+            <h2>Online Room</h2>
+            <div class="row">
+              <label for="onlineName">Name</label>
+              <input id="onlineName" type="text" maxlength="18" placeholder="Your name" />
+            </div>
+            <div class="row room-join-row">
+              <label for="roomCodeInput">Code</label>
+              <input id="roomCodeInput" type="text" maxlength="6" placeholder="ABC123" />
+            </div>
+            <div class="row room-button-row">
+              <button id="createRoomBtn" type="button">Create Room</button>
+              <button id="joinRoomBtn" type="button">Join Room</button>
+            </div>
+            <div class="row room-button-row">
+              <button id="copyRoomCodeBtn" type="button" class="hidden">Copy Code</button>
+              <button id="leaveRoomBtn" type="button" class="hidden">Leave Room</button>
+            </div>
+            <p id="roomStatusText" class="room-status-text">Offline mode.</p>
+            <p id="roomCodeDisplay" class="room-code-display hidden"></p>
+            <ul id="roomPlayersList" class="room-players-list hidden"></ul>
+          </section>
+
           <section class="card" id="turnCard">
             <h2>Turn</h2>
             <p><strong>Phase:</strong> <span id="phaseLabel">Pregame</span></p>

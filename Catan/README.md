@@ -4,15 +4,16 @@ This repo now includes a browser-based Catan experience with a real hex map and 
 
 ## Run (Graphical)
 
-From this folder, launch a local static server:
+Install dependencies and start the Node server:
 
 ```bash
-python3 -m http.server 8000
+npm install
+npm start
 ```
 
 Then open:
 
-- `http://localhost:8000/index.html`
+- `http://localhost:8000`
 
 ## What Is Implemented (Graphical)
 
@@ -35,6 +36,8 @@ Then open:
 - 4:1 bank trade.
 - 10 VP win condition.
 - Player dashboard with VP, pieces, and hand counts.
+- Online room codes + realtime game state sync (WebSocket).
+- Host-controlled online lobby with joinable room code.
 
 ## Controls
 
@@ -46,6 +49,11 @@ Then open:
 - `Clear`
 - Click legal spots highlighted on the board.
 - `End Turn` to pass to the next player.
+- `Online Room` card:
+- Enter your name.
+- `Create Room` to generate a code.
+- Friends use `Join Room` with that code.
+- Host starts once 3-4 players have joined.
 
 ## Terminal Version
 
@@ -63,4 +71,4 @@ This is still a base prototype and does not yet include:
 - Longest Road / Largest Army points.
 - Harbor-specific trade rates.
 - Bank resource limits.
-- AI or online multiplayer.
+- Reconnect support if a player refreshes/disconnects.
