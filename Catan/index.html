@@ -16,6 +16,66 @@
 
       <main class="layout">
         <section class="board-panel">
+          <div class="left-action-stack">
+          <section id="buildActionPopup" class="build-action-popup hidden">
+            <h3>Build</h3>
+            <div class="mode-grid">
+              <button class="mode-btn" data-mode="none">Clear</button>
+              <button class="mode-btn" data-mode="road">Road</button>
+              <button class="mode-btn" data-mode="settlement">Settlement</button>
+              <button class="mode-btn" data-mode="city">City</button>
+            </div>
+          </section>
+          <section id="tradePromptPopup" class="build-action-popup trade-prompt-popup hidden">
+            <h3>Trade</h3>
+            <button id="openTradeMenuBtn">Open Trade Menu</button>
+          </section>
+          <section id="tradeActionPopup" class="build-action-popup trade-action-popup hidden">
+            <div class="trade-popup-head">
+              <h3>Trade</h3>
+              <button id="closeTradeMenuBtn" type="button">Close</button>
+            </div>
+            <div class="trade-popup-grid">
+              <div id="bankTradeSection" class="trade-popup-card">
+                <h4>Bank (4:1)</h4>
+                <div class="row trade-popup-row">
+                  <label for="tradeGive">Give</label>
+                  <select id="tradeGive"></select>
+                </div>
+                <div class="row trade-popup-row">
+                  <label for="tradeGet">Get</label>
+                  <select id="tradeGet"></select>
+                </div>
+                <button id="tradeBtn">Trade</button>
+                <p id="bankTradeHint" class="trade-hint"></p>
+              </div>
+
+              <div id="playerTradeSection" class="trade-popup-card">
+                <h4>Player</h4>
+                <div class="row trade-popup-row">
+                  <label for="p2pTarget">With</label>
+                  <select id="p2pTarget"></select>
+                </div>
+                <div class="row trade-row trade-popup-row">
+                  <label for="p2pGive">Give</label>
+                  <select id="p2pGive"></select>
+                  <input id="p2pGiveAmount" type="number" min="1" step="1" value="1" />
+                </div>
+                <div class="row trade-row trade-popup-row">
+                  <label for="p2pGet">Get</label>
+                  <select id="p2pGet"></select>
+                  <input id="p2pGetAmount" type="number" min="1" step="1" value="1" />
+                </div>
+                <button id="p2pTradeBtn">Propose Trade</button>
+                <p id="p2pTradeHint" class="trade-hint"></p>
+              </div>
+            </div>
+          </section>
+          </div>
+          <div id="turnBadge" class="turn-badge hidden">
+            <span class="turn-badge-dot" id="turnBadgeDot" aria-hidden="true"></span>
+            <span id="turnBadgeText">Start a game</span>
+          </div>
           <svg id="board" aria-label="Catan board"></svg>
           <section class="board-hud">
             <div class="hud-top">
@@ -52,50 +112,8 @@
               <button id="endTurnBtn">End Turn</button>
             </div>
             <p><strong>Dice:</strong> <span id="diceLabel">-</span></p>
+            <p id="turnCallout" class="turn-callout">Set players and start.</p>
             <p id="statusText">Set players and start.</p>
-          </section>
-
-          <section class="card">
-            <h2>Action Mode</h2>
-            <div class="mode-grid">
-              <button class="mode-btn" data-mode="none">Inspect</button>
-              <button class="mode-btn" data-mode="road">Road</button>
-              <button class="mode-btn" data-mode="settlement">Settlement</button>
-              <button class="mode-btn" data-mode="city">City</button>
-              <button class="mode-btn" data-mode="robber">Move Robber</button>
-            </div>
-          </section>
-
-          <section class="card">
-            <h2>Bank Trade (4:1)</h2>
-            <div class="row">
-              <label for="tradeGive">Give</label>
-              <select id="tradeGive"></select>
-            </div>
-            <div class="row">
-              <label for="tradeGet">Get</label>
-              <select id="tradeGet"></select>
-            </div>
-            <button id="tradeBtn">Trade</button>
-          </section>
-
-          <section class="card">
-            <h2>Player Trade</h2>
-            <div class="row">
-              <label for="p2pTarget">With</label>
-              <select id="p2pTarget"></select>
-            </div>
-            <div class="row trade-row">
-              <label for="p2pGive">Give</label>
-              <select id="p2pGive"></select>
-              <input id="p2pGiveAmount" type="number" min="1" step="1" value="1" />
-            </div>
-            <div class="row trade-row">
-              <label for="p2pGet">Get</label>
-              <select id="p2pGet"></select>
-              <input id="p2pGetAmount" type="number" min="1" step="1" value="1" />
-            </div>
-            <button id="p2pTradeBtn">Propose Trade</button>
           </section>
 
           <section class="card log-card">

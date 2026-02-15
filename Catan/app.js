@@ -47,12 +47,20 @@ const state = {
   diceResult: null,
   pendingRobberMove: false,
   mode: "none", // none | road | settlement | city | robber
+  tradeMenuOpen: false,
   status: "Set players and start.",
   log: [],
 };
 
 const refs = {
   board: document.getElementById("board"),
+  buildActionPopup: document.getElementById("buildActionPopup"),
+  tradePromptPopup: document.getElementById("tradePromptPopup"),
+  tradeActionPopup: document.getElementById("tradeActionPopup"),
+  openTradeMenuBtn: document.getElementById("openTradeMenuBtn"),
+  closeTradeMenuBtn: document.getElementById("closeTradeMenuBtn"),
+  bankTradeSection: document.getElementById("bankTradeSection"),
+  playerTradeSection: document.getElementById("playerTradeSection"),
   setupFields: document.getElementById("setupFields"),
   playerCount: document.getElementById("playerCount"),
   nameInputs: document.getElementById("nameInputs"),
@@ -69,9 +77,16 @@ const refs = {
   p2pGiveAmount: document.getElementById("p2pGiveAmount"),
   p2pGet: document.getElementById("p2pGet"),
   p2pGetAmount: document.getElementById("p2pGetAmount"),
+  bankTradeHint: document.getElementById("bankTradeHint"),
+  p2pTradeHint: document.getElementById("p2pTradeHint"),
   phaseLabel: document.getElementById("phaseLabel"),
   currentPlayerLabel: document.getElementById("currentPlayerLabel"),
   diceLabel: document.getElementById("diceLabel"),
+  turnCard: document.getElementById("turnCard"),
+  turnCallout: document.getElementById("turnCallout"),
+  turnBadge: document.getElementById("turnBadge"),
+  turnBadgeDot: document.getElementById("turnBadgeDot"),
+  turnBadgeText: document.getElementById("turnBadgeText"),
   statusText: document.getElementById("statusText"),
   tableStats: document.getElementById("tableStats"),
   buildPanel: document.getElementById("buildPanel"),
@@ -264,6 +279,48 @@ function resourceCount(player) {
 
 function canAfford(player, cost) {
   return Object.entries(cost).every(([res, amt]) => player.hand[res] >= amt);
+}
+
+function hasAnyBuildByResources(player) {
+  return canAfford(player, COST.road) || canAfford(player, COST.settlement) || canAfford(player, COST.city);
+}
+
+function hasBankTradeOption(player) {
+  return RESOURCES.some((res) => player.hand[res] >= 4);
+}
+
+function hasPlayerTradeOption(playerIdx) {
+  const player = state.players[playerIdx];
+  if (!player || resourceCount(player) === 0) return false;
+  for (let idx = 0; idx < state.players.length; idx += 1) {
+    if (idx === playerIdx) continue;
+    if (resourceCount(state.players[idx]) > 0) return true;
+  }
+  return false;
+}
+
+function turnContextText(player) {
+  if (!player) return "Set players and start.";
+  if (state.phase === "setup") {
+    return state.setup?.expecting === "road"
+      ? `${player.name}: place an adjacent road.`
+      : `${player.name}: place a settlement.`;
+  }
+  if (state.phase === "gameover") return `${player.name} won the game.`;
+  if (state.phase !== "main") return "Set players and start.";
+  if (!state.hasRolled) return `${player.name}: roll dice.`;
+  if (state.pendingRobberMove) return `${player.name}: move the robber.`;
+  return `${player.name}: choose build/trade actions, then end turn.`;
+}
+
+function turnBadgeText(player) {
+  if (!player) return "Start a game";
+  if (state.phase === "setup") return `${player.name} | Setup`;
+  if (state.phase === "gameover") return `${player.name} | Winner`;
+  if (state.phase !== "main") return `${player.name} | Waiting`;
+  if (!state.hasRolled) return `${player.name} | Roll Dice`;
+  if (state.pendingRobberMove) return `${player.name} | Move Robber`;
+  return `${player.name} | Actions`;
 }
 
 function affordableBuildCount(player, cost) {
@@ -575,6 +632,7 @@ function startMainPhase() {
   state.hasRolled = false;
   state.pendingRobberMove = false;
   state.mode = "none";
+  state.tradeMenuOpen = false;
   state.setup = null;
   setStatus(`${currentPlayerObj().name}'s turn. Roll dice.`);
   logEvent("Setup complete. Main game begins.");
@@ -608,6 +666,7 @@ function beginSetup(players) {
   state.pendingRobberMove = false;
   state.diceResult = null;
   state.mode = "none";
+  state.tradeMenuOpen = false;
   setStatus(`${currentPlayerObj().name}: place settlement.`);
   logEvent("Setup started.");
 }
@@ -629,6 +688,7 @@ function startGame() {
     settlements: new Set(),
     cities: new Set(),
   }));
+  state.tradeMenuOpen = false;
 
   buildBoard();
   state.log = [];
@@ -1091,10 +1151,24 @@ function renderTableStats() {
   state.players.forEach((player, idx) => {
     const card = document.createElement("div");
     card.className = `player-card ${idx === state.currentPlayer ? "current" : ""}`;
+    card.style.setProperty("--turn-color", player.color);
 
     const nameRow = document.createElement("div");
     nameRow.className = "player-name";
-    nameRow.innerHTML = `<span>${player.name}</span><span class="player-color" style="background:${player.color}"></span>`;
+    const nameLabel = document.createElement("span");
+    nameLabel.textContent = player.name;
+    nameRow.appendChild(nameLabel);
+    if (idx === state.currentPlayer && state.phase !== "pregame") {
+      const turnPill = document.createElement("span");
+      turnPill.className = "turn-pill";
+      turnPill.textContent = "TURN";
+      turnPill.style.setProperty("--turn-color", player.color);
+      nameRow.appendChild(turnPill);
+    }
+    const color = document.createElement("span");
+    color.className = "player-color";
+    color.style.background = player.color;
+    nameRow.appendChild(color);
     card.appendChild(nameRow);
 
     const vp = document.createElement("div");
@@ -1189,32 +1263,115 @@ function renderControls() {
   updateSetupCardVisibility();
   refreshPlayerTradeTargets();
   refs.phaseLabel.textContent = phaseLabel();
+  const activePlayer = state.players.length > 0 ? currentPlayerObj() : null;
   refs.currentPlayerLabel.textContent =
-    state.players.length > 0 ? `${currentPlayerObj().name}${state.phase === "setup" ? " (setup)" : ""}` : "-";
+    activePlayer ? `${activePlayer.name}${state.phase === "setup" ? " (setup)" : ""}` : "-";
   refs.diceLabel.textContent = state.diceResult !== null ? String(state.diceResult) : "-";
   refs.statusText.textContent = state.status;
+  refs.turnCallout.textContent = turnContextText(activePlayer);
 
-  const canRoll = state.phase === "main" && !state.hasRolled && state.phase !== "gameover";
+  const inMainPhase = state.phase === "main" && state.phase !== "gameover";
+  const canRoll = inMainPhase && !state.hasRolled;
   refs.rollBtn.disabled = !canRoll;
 
-  const canEndTurn =
-    state.phase === "main" && state.hasRolled && !state.pendingRobberMove && state.phase !== "gameover";
+  const canEndTurn = inMainPhase && state.hasRolled && !state.pendingRobberMove;
   refs.endTurnBtn.disabled = !canEndTurn;
 
-  const canTrade = state.phase === "main" && state.hasRolled && !state.pendingRobberMove && state.phase !== "gameover";
-  refs.tradeBtn.disabled = !canTrade;
-  refs.p2pTradeBtn.disabled = !canTrade || refs.p2pTarget.options.length === 0;
-  refs.p2pTarget.disabled = !canTrade || refs.p2pTarget.options.length === 0;
-  refs.p2pGive.disabled = !canTrade;
-  refs.p2pGet.disabled = !canTrade;
-  refs.p2pGiveAmount.disabled = !canTrade;
-  refs.p2pGetAmount.disabled = !canTrade;
+  const canTakeActions = inMainPhase && state.hasRolled && !state.pendingRobberMove;
+  const canBankTrade = Boolean(activePlayer && canTakeActions && hasBankTradeOption(activePlayer));
+  const canPlayerTrade = Boolean(
+    activePlayer &&
+      canTakeActions &&
+      refs.p2pTarget.options.length > 0 &&
+      hasPlayerTradeOption(state.currentPlayer)
+  );
+  const hasTradeChoice = canBankTrade || canPlayerTrade;
+  if (!hasTradeChoice) state.tradeMenuOpen = false;
+  const showTradeMenu = hasTradeChoice && state.tradeMenuOpen;
+
+  refs.tradePromptPopup.classList.toggle("hidden", !hasTradeChoice || showTradeMenu);
+  refs.tradeActionPopup.classList.toggle("hidden", !showTradeMenu);
+  refs.bankTradeSection.classList.toggle("hidden", !canBankTrade);
+  refs.playerTradeSection.classList.toggle("hidden", !canPlayerTrade);
+  refs.openTradeMenuBtn.disabled = !hasTradeChoice;
+  refs.closeTradeMenuBtn.disabled = !hasTradeChoice;
+
+  refs.tradeBtn.disabled = !showTradeMenu || !canBankTrade;
+  refs.tradeGive.disabled = !showTradeMenu || !canBankTrade;
+  refs.tradeGet.disabled = !showTradeMenu || !canBankTrade;
+  refs.p2pTradeBtn.disabled = !showTradeMenu || !canPlayerTrade;
+  refs.p2pTarget.disabled = !showTradeMenu || !canPlayerTrade;
+  refs.p2pGive.disabled = !showTradeMenu || !canPlayerTrade;
+  refs.p2pGet.disabled = !showTradeMenu || !canPlayerTrade;
+  refs.p2pGiveAmount.disabled = !showTradeMenu || !canPlayerTrade;
+  refs.p2pGetAmount.disabled = !showTradeMenu || !canPlayerTrade;
+
+  if (canBankTrade && activePlayer) {
+    const tradeable = RESOURCES.filter((res) => activePlayer.hand[res] >= 4);
+    refs.bankTradeHint.textContent = `Can give: ${tradeable.join(", ")}`;
+    if (!tradeable.includes(refs.tradeGive.value)) refs.tradeGive.value = tradeable[0];
+    if (refs.tradeGet.value === refs.tradeGive.value) {
+      const fallback = RESOURCES.find((res) => res !== refs.tradeGive.value);
+      if (fallback) refs.tradeGet.value = fallback;
+    }
+  } else {
+    refs.bankTradeHint.textContent = "";
+  }
+
+  if (canPlayerTrade) {
+    const targets = [];
+    for (let idx = 0; idx < state.players.length; idx += 1) {
+      if (idx === state.currentPlayer) continue;
+      if (resourceCount(state.players[idx]) > 0) targets.push(state.players[idx].name);
+    }
+    refs.p2pTradeHint.textContent = `Available players: ${targets.join(", ")}`;
+  } else {
+    refs.p2pTradeHint.textContent = "";
+  }
+
+  const showBuildActionPopup = Boolean(activePlayer && canTakeActions && hasAnyBuildByResources(activePlayer));
+  refs.buildActionPopup.classList.toggle("hidden", !showBuildActionPopup);
+  if (!showBuildActionPopup && (state.mode === "road" || state.mode === "settlement" || state.mode === "city")) {
+    state.mode = "none";
+  }
 
   for (const btn of refs.modeButtons) {
     const mode = btn.dataset.mode;
     btn.classList.toggle("active", state.mode === mode);
-    const allowed = state.phase === "main" && state.phase !== "gameover";
-    btn.disabled = !allowed;
+    if (!showBuildActionPopup || !activePlayer) {
+      btn.disabled = true;
+      continue;
+    }
+    if (mode === "none") {
+      btn.disabled = false;
+      continue;
+    }
+    if (mode === "road") {
+      btn.disabled = !canAfford(activePlayer, COST.road);
+      continue;
+    }
+    if (mode === "settlement") {
+      btn.disabled = !canAfford(activePlayer, COST.settlement);
+      continue;
+    }
+    if (mode === "city") {
+      btn.disabled = !canAfford(activePlayer, COST.city);
+      continue;
+    }
+    btn.disabled = true;
+  }
+
+  if (activePlayer && state.phase !== "pregame") {
+    refs.turnCard.classList.add("turn-active");
+    refs.turnCard.style.setProperty("--turn-color", activePlayer.color);
+    refs.turnBadge.classList.remove("hidden");
+    refs.turnBadgeDot.style.background = activePlayer.color;
+    refs.turnBadgeText.textContent = turnBadgeText(activePlayer);
+  } else {
+    refs.turnCard.classList.remove("turn-active");
+    refs.turnCard.style.removeProperty("--turn-color");
+    refs.turnBadge.classList.add("hidden");
+    refs.turnBadgeText.textContent = "Start a game";
   }
 }
 
@@ -1248,6 +1405,7 @@ function endTurn() {
   state.hasRolled = false;
   state.diceResult = null;
   state.mode = "none";
+  state.tradeMenuOpen = false;
   setStatus(`${currentPlayerObj().name}: roll dice.`);
   logEvent(`Turn passed to ${currentPlayerObj().name}.`);
   render();
@@ -1379,6 +1537,7 @@ function refreshPlayerTradeTargets() {
 
   for (let idx = 0; idx < state.players.length; idx += 1) {
     if (idx === state.currentPlayer) continue;
+    if (resourceCount(state.players[idx]) === 0) continue;
     const option = document.createElement("option");
     option.value = String(idx);
     option.textContent = state.players[idx].name;
@@ -1411,6 +1570,15 @@ function bindEvents() {
   refs.restartBtn.addEventListener("click", restartGame);
   refs.rollBtn.addEventListener("click", rollDice);
   refs.endTurnBtn.addEventListener("click", endTurn);
+  refs.openTradeMenuBtn.addEventListener("click", () => {
+    if (refs.tradePromptPopup.classList.contains("hidden")) return;
+    state.tradeMenuOpen = true;
+    render();
+  });
+  refs.closeTradeMenuBtn.addEventListener("click", () => {
+    state.tradeMenuOpen = false;
+    render();
+  });
   refs.tradeBtn.addEventListener("click", bankTrade);
   refs.p2pTradeBtn.addEventListener("click", playerTrade);
   refs.actionModalCancelBtn.addEventListener("click", () => closeActionModal(null));
@@ -1426,12 +1594,12 @@ function bindEvents() {
   refs.modeButtons.forEach((btn) => {
     btn.addEventListener("click", () => {
       if (state.phase !== "main") return;
+      if (refs.buildActionPopup.classList.contains("hidden")) return;
       state.mode = btn.dataset.mode;
-      if (state.pendingRobberMove) {
-        state.mode = "robber";
-        setStatus("Move robber first.");
+      if (state.mode === "none") {
+        setStatus("Build selection cleared.");
       } else {
-        setStatus(`Mode: ${state.mode}.`);
+        setStatus(`Build mode: ${state.mode}.`);
       }
       render();
     });

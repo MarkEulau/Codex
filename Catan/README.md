@@ -39,11 +39,11 @@ Then open:
 ## Controls
 
 - `Start New Game` to deal a board.
-- `Roll Dice` then choose action mode:
+- `Roll Dice` and, when you can afford builds, use the build popup on the left side of the board:
 - `Road`
 - `Settlement`
 - `City`
-- `Move Robber`
+- `Clear`
 - Click legal spots highlighted on the board.
 - `End Turn` to pass to the next player.
 
