@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Catan Tabletop</title>
+    <link rel="stylesheet" href="./style.css" />
+    <script src="./app.js" defer></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <h1>Catan Tabletop</h1>
+        <p>Graphical base-game prototype with board interactions</p>
+      </header>
+
+      <main class="layout">
+        <section class="board-panel">
+          <svg id="board" aria-label="Catan board"></svg>
+          <section class="board-hud">
+            <div class="hud-top">
+              <h2>Table Stats</h2>
+              <div id="buildPanel" class="build-panel"></div>
+            </div>
+            <div id="tableStats" class="table-stats"></div>
+          </section>
+        </section>
+
+        <aside class="side-panel">
+          <section class="card" id="setupCard">
+            <h2>Game Setup</h2>
+            <div id="setupFields">
+              <div class="row">
+                <label for="playerCount">Players</label>
+                <select id="playerCount">
+                  <option value="3">3</option>
+                  <option value="4">4</option>
+                </select>
+              </div>
+              <div id="nameInputs"></div>
+            </div>
+            <button id="startBtn">Start New Game</button>
+            <button id="restartBtn" class="hidden">Restart Game</button>
+          </section>
+
+          <section class="card" id="turnCard">
+            <h2>Turn</h2>
+            <p><strong>Phase:</strong> <span id="phaseLabel">Pregame</span></p>
+            <p><strong>Current:</strong> <span id="currentPlayerLabel">-</span></p>
+            <div class="row actions">
+              <button id="rollBtn">Roll Dice</button>
+              <button id="endTurnBtn">End Turn</button>
+            </div>
+            <p><strong>Dice:</strong> <span id="diceLabel">-</span></p>
+            <p id="statusText">Set players and start.</p>
+          </section>
+
+          <section class="card">
+            <h2>Action Mode</h2>
+            <div class="mode-grid">
+              <button class="mode-btn" data-mode="none">Inspect</button>
+              <button class="mode-btn" data-mode="road">Road</button>
+              <button class="mode-btn" data-mode="settlement">Settlement</button>
+              <button class="mode-btn" data-mode="city">City</button>
+              <button class="mode-btn" data-mode="robber">Move Robber</button>
+            </div>
+          </section>
+
+          <section class="card">
+            <h2>Bank Trade (4:1)</h2>
+            <div class="row">
+              <label for="tradeGive">Give</label>
+              <select id="tradeGive"></select>
+            </div>
+            <div class="row">
+              <label for="tradeGet">Get</label>
+              <select id="tradeGet"></select>
+            </div>
+            <button id="tradeBtn">Trade</button>
+          </section>
+
+          <section class="card">
+            <h2>Player Trade</h2>
+            <div class="row">
+              <label for="p2pTarget">With</label>
+              <select id="p2pTarget"></select>
+            </div>
+            <div class="row trade-row">
+              <label for="p2pGive">Give</label>
+              <select id="p2pGive"></select>
+              <input id="p2pGiveAmount" type="number" min="1" step="1" value="1" />
+            </div>
+            <div class="row trade-row">
+              <label for="p2pGet">Get</label>
+              <select id="p2pGet"></select>
+              <input id="p2pGetAmount" type="number" min="1" step="1" value="1" />
+            </div>
+            <button id="p2pTradeBtn">Propose Trade</button>
+          </section>
+
+          <section class="card log-card">
+            <h2>Game Log</h2>
+            <ul id="logList"></ul>
+          </section>
+        </aside>
+      </main>
+    </div>
+
+    <div id="actionModal" class="action-modal hidden" aria-hidden="true">
+      <div class="action-modal-card">
+        <h3 id="actionModalTitle"></h3>
+        <p id="actionModalText"></p>
+        <div id="actionModalOptions" class="action-modal-options"></div>
+        <div class="action-modal-footer">
+          <button id="actionModalCancelBtn">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>
