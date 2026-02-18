@@ -38,10 +38,14 @@ Then open:
 - Player dashboard with VP, pieces, and hand counts.
 - Online room codes + realtime game state sync (WebSocket).
 - Host-controlled online lobby with joinable room code.
+- Server-side action journaling to `game_saves/*.jsonl` for every game (online and local).
+- Host can roll back the room to the previous saved action.
+- `Resume Game` opens a save picker (date/time + players) so you can choose which game to continue.
 
 ## Controls
 
 - `Start New Game` to deal a board.
+- `Resume Game` to choose a saved game and continue from that snapshot.
 - `Roll Dice` and, when you can afford builds, use the build popup on the left side of the board:
 - `Road`
 - `Settlement`
@@ -54,6 +58,10 @@ Then open:
 - `Create Room` to generate a code.
 - Friends use `Join Room` with that code.
 - Host starts once 3-4 players have joined.
+- During online play:
+- Every synced game action is appended to a save file in `game_saves/`.
+- Host can click `Undo Last Action` to restore the previous saved state.
+- Turn timer accepts values from `1` to `600` seconds.
 
 ## Terminal Version
 

@@ -19,6 +19,12 @@ const PLAYER_COLORS = ["#b93b2a", "#2b66be", "#d49419", "#2f8852"];
 const HIGH_PROBABILITY_NUMBERS = new Set([6, 8]);
 const DICE_SUMS = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
 const DEFAULT_TURN_SECONDS = 60;
+const MIN_TURN_SECONDS = 1;
+const MAX_TURN_SECONDS = 600;
+const LOCAL_SAVE_STORAGE_KEY = "catan.latest_save.v1";
+const LOCAL_SAVE_INDEX_STORAGE_KEY = "catan.save_index.v1";
+const LOCAL_SAVE_ITEM_STORAGE_PREFIX = "catan.save_item.v1:";
+const MAX_BROWSER_SAVED_GAMES = 120;
 const HEX_NEIGHBOR_DIRS = [
   [1, 0],
   [1, -1],
@@ -89,15 +95,19 @@ const refs = {
   turnSeconds: document.getElementById("turnSeconds"),
   nameInputs: document.getElementById("nameInputs"),
   startBtn: document.getElementById("startBtn"),
+  resumeGameBtn: document.getElementById("resumeGameBtn"),
   restartBtn: document.getElementById("restartBtn"),
+  roomCard: document.getElementById("roomCard"),
   onlineName: document.getElementById("onlineName"),
   roomCodeInput: document.getElementById("roomCodeInput"),
   createRoomBtn: document.getElementById("createRoomBtn"),
   joinRoomBtn: document.getElementById("joinRoomBtn"),
   copyRoomCodeBtn: document.getElementById("copyRoomCodeBtn"),
   leaveRoomBtn: document.getElementById("leaveRoomBtn"),
+  rollbackActionBtn: document.getElementById("rollbackActionBtn"),
   roomStatusText: document.getElementById("roomStatusText"),
   roomCodeDisplay: document.getElementById("roomCodeDisplay"),
+  roomSaveMeta: document.getElementById("roomSaveMeta"),
   roomPlayersList: document.getElementById("roomPlayersList"),
   rollBtn: document.getElementById("rollBtn"),
   endTurnBtn: document.getElementById("endTurnBtn"),
@@ -155,6 +165,25 @@ const onlineState = {
   started: false,
   players: [],
   seatMap: [],
+  version: 0,
+  historyCount: 0,
+  saveFile: "",
+};
+
+const localSaveState = {
+  sessionId: "",
+  saveFile: "",
+  browserSaveId: "",
+  queue: [],
+  starting: false,
+  flushing: false,
+  token: 0,
+};
+
+const resumeState = {
+  checking: false,
+  hasSave: false,
+  latestFile: "",
 };
 
 function resourceMap(init = 0) {
@@ -334,6 +363,402 @@ function sendSocketMessage(type, payload = {}) {
   return true;
 }
 
+function normalizeActionLabel(raw) {
+  const value = String(raw ?? "").trim();
+  if (!value) return "sync";
+  return value.slice(0, 48);
+}
+
+async function apiJson(path, options = {}) {
+  const init = { cache: "no-store", ...options };
+  if (init.body !== undefined) {
+    init.headers = { "Content-Type": "application/json", ...(init.headers || {}) };
+  }
+  const response = await fetch(path, init);
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch (_err) {
+    payload = null;
+  }
+  if (!response.ok) {
+    const message = typeof payload?.error === "string" ? payload.error : `Request failed (${response.status}).`;
+    throw new Error(message);
+  }
+  return payload || {};
+}
+
+function readLatestLocalStorageSave() {
+  try {
+    const raw = window.localStorage.getItem(LOCAL_SAVE_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || !parsed.gameState || typeof parsed.gameState !== "object") {
+      return null;
+    }
+    return {
+      gameState: parsed.gameState,
+      savedAt: String(parsed.savedAt || ""),
+    };
+  } catch (_err) {
+    return null;
+  }
+}
+
+function localSaveStorageKey(saveId) {
+  return `${LOCAL_SAVE_ITEM_STORAGE_PREFIX}${saveId}`;
+}
+
+function readBrowserSaveIndex() {
+  try {
+    const raw = window.localStorage.getItem(LOCAL_SAVE_INDEX_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const out = [];
+    parsed.forEach((entry) => {
+      if (typeof entry !== "string") return;
+      const value = entry.trim();
+      if (!value) return;
+      if (out.includes(value)) return;
+      out.push(value);
+    });
+    return out;
+  } catch (_err) {
+    return [];
+  }
+}
+
+function writeBrowserSaveIndex(ids) {
+  try {
+    window.localStorage.setItem(LOCAL_SAVE_INDEX_STORAGE_KEY, JSON.stringify(ids));
+  } catch (_err) {
+    // Ignore storage write failures.
+  }
+}
+
+function createBrowserSaveId() {
+  return `b-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function readBrowserSaveById(saveId) {
+  const safeId = String(saveId || "").trim();
+  if (!safeId) return null;
+  try {
+    const raw = window.localStorage.getItem(localSaveStorageKey(safeId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || !parsed.gameState || typeof parsed.gameState !== "object") {
+      return null;
+    }
+    return {
+      id: safeId,
+      createdAt: String(parsed.createdAt || parsed.savedAt || ""),
+      savedAt: String(parsed.savedAt || ""),
+      players: Array.isArray(parsed.players) ? parsed.players.slice() : [],
+      gameState: parsed.gameState,
+    };
+  } catch (_err) {
+    return null;
+  }
+}
+
+function pruneBrowserSaveIndex(ids) {
+  const keep = ids.slice(0, MAX_BROWSER_SAVED_GAMES);
+  const removed = ids.slice(MAX_BROWSER_SAVED_GAMES);
+  removed.forEach((saveId) => {
+    try {
+      window.localStorage.removeItem(localSaveStorageKey(saveId));
+    } catch (_err) {
+      // Ignore cleanup failures.
+    }
+  });
+  return keep;
+}
+
+function readAllBrowserSaves() {
+  const ids = readBrowserSaveIndex();
+  const saves = [];
+  ids.forEach((saveId) => {
+    const save = readBrowserSaveById(saveId);
+    if (save) saves.push(save);
+  });
+  saves.sort((a, b) => {
+    const left = Date.parse(a.savedAt || a.createdAt || "");
+    const right = Date.parse(b.savedAt || b.createdAt || "");
+    return (Number.isFinite(right) ? right : 0) - (Number.isFinite(left) ? left : 0);
+  });
+  return saves;
+}
+
+function persistLatestLocalStorageSave(action) {
+  if (state.players.length === 0 || state.phase === "pregame") return;
+  const saveId = localSaveState.browserSaveId || createBrowserSaveId();
+  localSaveState.browserSaveId = saveId;
+  const existing = readBrowserSaveById(saveId);
+  const nowIso = new Date().toISOString();
+  const playerNames = state.players.map((player, idx) => sanitizePlayerName(player.name, `Player ${idx + 1}`));
+  const payload = {
+    id: saveId,
+    createdAt: existing?.createdAt || nowIso,
+    savedAt: nowIso,
+    action: normalizeActionLabel(action),
+    players: playerNames,
+    gameState: serializeGameState(),
+  };
+  try {
+    window.localStorage.setItem(localSaveStorageKey(saveId), JSON.stringify(payload));
+    const nextIndex = pruneBrowserSaveIndex([saveId, ...readBrowserSaveIndex().filter((id) => id !== saveId)]);
+    writeBrowserSaveIndex(nextIndex);
+    // Keep one-entry compatibility key for older versions.
+    window.localStorage.setItem(
+      LOCAL_SAVE_STORAGE_KEY,
+      JSON.stringify({
+        savedAt: payload.savedAt,
+        action: payload.action,
+        players: payload.players,
+        gameState: payload.gameState,
+      })
+    );
+    resumeState.hasSave = true;
+    if (!resumeState.latestFile) resumeState.latestFile = "Browser local saves";
+  } catch (_err) {
+    // Ignore localStorage issues and continue with server saves.
+  }
+}
+
+function resetLocalSaveSession() {
+  localSaveState.token += 1;
+  localSaveState.sessionId = "";
+  localSaveState.saveFile = "";
+  localSaveState.browserSaveId = "";
+  localSaveState.queue = [];
+  localSaveState.starting = false;
+  localSaveState.flushing = false;
+}
+
+async function startLocalSaveSession(options = {}) {
+  if (isOnlineGameStarted()) return false;
+  if (state.players.length === 0 || state.phase === "pregame") return false;
+  if (localSaveState.sessionId || localSaveState.starting) return localSaveState.sessionId.length > 0;
+
+  const token = localSaveState.token;
+  localSaveState.starting = true;
+  try {
+    const payload = await apiJson("/api/local-game/start", {
+      method: "POST",
+      body: JSON.stringify({
+        playerNames: state.players.map((player) => player.name),
+        turnSeconds: state.turnSeconds,
+        reason: normalizeActionLabel(options.reason || "local_game_start"),
+      }),
+    });
+    if (token !== localSaveState.token) return false;
+    localSaveState.sessionId = String(payload.sessionId || "");
+    localSaveState.saveFile = String(payload.save?.file || "");
+    return localSaveState.sessionId.length > 0;
+  } catch (_err) {
+    if (token !== localSaveState.token) return false;
+    return false;
+  } finally {
+    if (token === localSaveState.token) localSaveState.starting = false;
+    void flushLocalSaveQueue();
+  }
+}
+
+async function flushLocalSaveQueue() {
+  if (localSaveState.flushing) return;
+  if (!localSaveState.sessionId || localSaveState.queue.length === 0) return;
+
+  const token = localSaveState.token;
+  localSaveState.flushing = true;
+
+  try {
+    while (token === localSaveState.token && localSaveState.sessionId && localSaveState.queue.length > 0) {
+      const entry = localSaveState.queue[0];
+      try {
+        const payload = await apiJson("/api/local-game/state", {
+          method: "POST",
+          body: JSON.stringify({
+            sessionId: localSaveState.sessionId,
+            action: entry.action,
+            gameState: entry.gameState,
+          }),
+        });
+        if (token !== localSaveState.token) return;
+        localSaveState.saveFile = String(payload.save?.file || localSaveState.saveFile);
+        localSaveState.queue.shift();
+      } catch (err) {
+        if (token !== localSaveState.token) return;
+        if (err instanceof Error && /not found/i.test(err.message)) {
+          localSaveState.sessionId = "";
+          if (!localSaveState.starting) void startLocalSaveSession({ reason: "local_session_recovered" });
+        }
+        break;
+      }
+    }
+  } finally {
+    if (token !== localSaveState.token) return;
+    localSaveState.flushing = false;
+    if (localSaveState.queue.length > 0) {
+      window.setTimeout(() => {
+        if (token !== localSaveState.token) return;
+        if (!localSaveState.sessionId && !localSaveState.starting) {
+          void startLocalSaveSession({ reason: "local_session_retry" });
+        }
+        void flushLocalSaveQueue();
+      }, 700);
+      return;
+    }
+    if (localSaveState.saveFile) {
+      resumeState.hasSave = true;
+      resumeState.latestFile = localSaveState.saveFile;
+    }
+    if (state.phase === "pregame") renderControls();
+  }
+}
+
+function queueLocalSaveSnapshot(action) {
+  if (isOnlineGameStarted()) return;
+  if (state.players.length === 0 || state.phase === "pregame") return;
+  localSaveState.queue.push({
+    action: normalizeActionLabel(action),
+    gameState: serializeGameState(),
+  });
+  if (!localSaveState.sessionId && !localSaveState.starting) {
+    void startLocalSaveSession();
+    return;
+  }
+  void flushLocalSaveQueue();
+}
+
+function recordGameAction(action, options = {}) {
+  const normalized = normalizeActionLabel(action);
+  persistLatestLocalStorageSave(normalized);
+  if (isOnlineGameStarted()) {
+    const force = options.force !== false;
+    publishOnlineState({ force, action: normalized });
+    return;
+  }
+  queueLocalSaveSnapshot(normalized);
+}
+
+async function fetchSavedGamesList() {
+  return apiJson("/api/game-saves", { method: "GET" });
+}
+
+async function fetchSavedGameById(saveId) {
+  const encoded = encodeURIComponent(String(saveId || ""));
+  return apiJson(`/api/game-saves/load?id=${encoded}`, { method: "GET" });
+}
+
+function formatSaveTimestamp(isoString) {
+  const date = new Date(isoString);
+  if (Number.isNaN(date.getTime())) return "Unknown date/time";
+  return date.toLocaleString([], {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function playerNamesFromList(players) {
+  if (!Array.isArray(players) || players.length === 0) return [];
+  return players
+    .map((player, idx) => sanitizePlayerName(player?.name, `Player ${idx + 1}`))
+    .filter((name) => Boolean(name));
+}
+
+function playerNamesFromSnapshot(snapshot) {
+  if (!snapshot || !Array.isArray(snapshot.players) || snapshot.players.length === 0) return [];
+  return snapshot.players
+    .map((player, idx) => sanitizePlayerName(player?.name, `Player ${idx + 1}`))
+    .filter((name) => Boolean(name));
+}
+
+function formatPlayersSummary(playerNames) {
+  if (!Array.isArray(playerNames) || playerNames.length === 0) return "Unknown players";
+  return playerNames.join(", ");
+}
+
+async function collectResumeOptions() {
+  const options = [];
+  let serverSaves = [];
+  try {
+    const payload = await fetchSavedGamesList();
+    serverSaves = Array.isArray(payload?.saves) ? payload.saves : [];
+  } catch (_err) {
+    serverSaves = [];
+  }
+
+  serverSaves.forEach((save) => {
+    const names = playerNamesFromList(save.players);
+    const label = `${formatSaveTimestamp(save.updatedAt || save.createdAt)} | ${formatPlayersSummary(names)}`;
+    options.push({
+      value: `server:${save.id}`,
+      label,
+      sourceLabel: String(save.file || save.id || "Saved game"),
+      sortAt: save.updatedAt || save.createdAt || "",
+    });
+  });
+
+  const browserSaves = readAllBrowserSaves();
+  browserSaves.forEach((save) => {
+    const names = Array.isArray(save.players) && save.players.length > 0 ? save.players : playerNamesFromSnapshot(save.gameState);
+    const label = `${formatSaveTimestamp(save.savedAt || save.createdAt)} | ${formatPlayersSummary(names)}`;
+    options.push({
+      value: `local:${save.id}`,
+      label,
+      sourceLabel: "Browser local save",
+      sortAt: save.savedAt || save.createdAt || "",
+    });
+  });
+
+  // Legacy one-slot fallback for older builds.
+  if (browserSaves.length === 0) {
+    const legacySave = readLatestLocalStorageSave();
+    if (legacySave && legacySave.gameState) {
+      const names = playerNamesFromSnapshot(legacySave.gameState);
+      const label = `${formatSaveTimestamp(legacySave.savedAt)} | ${formatPlayersSummary(names)}`;
+      options.push({
+        value: "local:legacy",
+        label,
+        sourceLabel: "Browser local save",
+        sortAt: legacySave.savedAt || "",
+      });
+    }
+  }
+
+  options.sort((a, b) => {
+    const left = Date.parse(a.sortAt || "");
+    const right = Date.parse(b.sortAt || "");
+    return (Number.isFinite(right) ? right : 0) - (Number.isFinite(left) ? left : 0);
+  });
+  return options.map((option) => ({
+    value: option.value,
+    label: option.label,
+    sourceLabel: option.sourceLabel,
+  }));
+}
+
+async function refreshLatestSaveAvailability() {
+  if (resumeState.checking) return;
+  resumeState.checking = true;
+  try {
+    const options = await collectResumeOptions();
+    resumeState.hasSave = options.length > 0;
+    resumeState.latestFile = options.length > 0 ? options[0].sourceLabel : "";
+  } catch (_err) {
+    resumeState.hasSave = false;
+    resumeState.latestFile = "";
+  } finally {
+    resumeState.checking = false;
+    renderControls();
+  }
+}
+
 function queueRoomCommand(type, payload = {}) {
   pendingRoomCommand = { type, payload };
   if (onlineState.socket && onlineState.socket.readyState === WebSocket.OPEN) {
@@ -367,6 +792,9 @@ function queueRoomCommand(type, payload = {}) {
     onlineState.started = false;
     onlineState.players = [];
     onlineState.seatMap = [];
+    onlineState.version = 0;
+    onlineState.historyCount = 0;
+    onlineState.saveFile = "";
     remoteSyncVersion = 0;
     setRoomStatusOverride("Disconnected from server.");
     renderRoomPanel();
@@ -408,6 +836,9 @@ function handleSocketMessage(raw) {
   onlineState.started = room.started === true;
   onlineState.players = Array.isArray(room.players) ? room.players.slice() : [];
   onlineState.seatMap = Array.isArray(room.seatMap) ? room.seatMap.slice() : [];
+  onlineState.version = Number(room.version) || 0;
+  onlineState.historyCount = Number(room.save?.historyCount) || 0;
+  onlineState.saveFile = String(room.save?.file || "");
 
   if (onlineState.started && room.gameState && typeof room.version === "number" && room.version >= remoteSyncVersion) {
     if (room.version > remoteSyncVersion || state.phase === "pregame") {
@@ -593,7 +1024,8 @@ function publishOnlineState(options = {}) {
   if (!isOnlineGameStarted()) return;
   if (!onlineState.connected) return;
   if (!options.force && !localControlsCurrentTurn()) return;
-  sendSocketMessage("state_sync", { gameState: serializeGameState() });
+  const action = typeof options.action === "string" && options.action.trim() ? options.action.trim() : "sync";
+  sendSocketMessage("state_sync", { gameState: serializeGameState(), action });
 }
 
 function assertLocalTurnControl() {
@@ -613,12 +1045,22 @@ function localDisplayName() {
 
 function requestCreateRoom() {
   if (isOnlineRoomActive()) return;
+  if (state.phase !== "pregame") {
+    setRoomStatusOverride("Finish or restart the current game to use online rooms.");
+    renderRoomPanel();
+    return;
+  }
   roomStatusOverride = "";
   queueRoomCommand("create_room", { name: localDisplayName() });
 }
 
 function requestJoinRoom() {
   if (isOnlineRoomActive()) return;
+  if (state.phase !== "pregame") {
+    setRoomStatusOverride("Finish or restart the current game to use online rooms.");
+    renderRoomPanel();
+    return;
+  }
   const code = refs.roomCodeInput.value.trim().toUpperCase();
   refs.roomCodeInput.value = code;
   if (!ROOM_CODE_REGEX.test(code)) {
@@ -638,6 +1080,9 @@ function requestLeaveRoom() {
   onlineState.started = false;
   onlineState.players = [];
   onlineState.seatMap = [];
+  onlineState.version = 0;
+  onlineState.historyCount = 0;
+  onlineState.saveFile = "";
   remoteSyncVersion = 0;
   setRoomStatusOverride("Left room.");
   renderRoomPanel();
@@ -664,20 +1109,155 @@ function copyRoomCode() {
   );
 }
 
+function requestRollbackAction() {
+  if (!isOnlineGameStarted()) {
+    setRoomStatusOverride("Start a room game before rolling back.");
+    renderRoomPanel();
+    return;
+  }
+  if (!isRoomHost()) {
+    setRoomStatusOverride("Only the host can roll back actions.");
+    renderRoomPanel();
+    return;
+  }
+  if (onlineState.historyCount < 2) {
+    setRoomStatusOverride("Need at least 2 saved actions before rollback.");
+    renderRoomPanel();
+    return;
+  }
+  const confirmed = window.confirm("Rollback to the previous saved action?");
+  if (!confirmed) return;
+
+  if (!sendSocketMessage("rollback_state")) {
+    setRoomStatusOverride("Could not send rollback request.");
+    renderRoomPanel();
+    return;
+  }
+  setRoomStatusOverride("Rollback requested...");
+  renderRoomPanel();
+}
+
+async function requestResumeGame() {
+  if (state.phase !== "pregame") return;
+  if (isOnlineRoomActive()) {
+    setStatus("Leave the room first to resume a saved game.");
+    render();
+    return;
+  }
+
+  refs.resumeGameBtn.disabled = true;
+  try {
+    const resumeOptions = await collectResumeOptions();
+    if (resumeOptions.length === 0) {
+      throw new Error("No saved game found yet.");
+    }
+
+    const pickedValue = await showActionModal({
+      title: "Resume Saved Game",
+      text: "Select a game by date/time and players.",
+      options: resumeOptions.map((option) => ({
+        label: option.label,
+        value: option.value,
+      })),
+      allowCancel: true,
+    });
+    if (!pickedValue) {
+      setStatus("Resume canceled.");
+      render();
+      return;
+    }
+
+    const selected = resumeOptions.find((option) => option.value === pickedValue);
+    if (!selected) {
+      throw new Error("Invalid saved-game selection.");
+    }
+
+    let resumeSnapshot = null;
+    let sourceLabel = selected.sourceLabel;
+    let selectedBrowserSaveId = "";
+    if (selected.value.startsWith("local:")) {
+      const localId = selected.value.slice("local:".length);
+      selectedBrowserSaveId = localId;
+      if (localId === "legacy") {
+        const legacySave = readLatestLocalStorageSave();
+        if (legacySave && legacySave.gameState && typeof legacySave.gameState === "object") {
+          resumeSnapshot = legacySave.gameState;
+        }
+      } else {
+        const localSave = readBrowserSaveById(localId);
+        if (localSave && localSave.gameState && typeof localSave.gameState === "object") {
+          resumeSnapshot = localSave.gameState;
+        }
+      }
+    } else if (selected.value.startsWith("server:")) {
+      const saveId = selected.value.slice("server:".length);
+      const payload = await fetchSavedGameById(saveId);
+      if (payload && payload.gameState && typeof payload.gameState === "object") {
+        resumeSnapshot = payload.gameState;
+        sourceLabel = String(payload.save?.file || sourceLabel);
+      }
+    }
+
+    if (!resumeSnapshot) {
+      throw new Error("Could not load the selected saved game.");
+    }
+
+    if (actionModalResolver) closeActionModal(null);
+    resetLocalSaveSession();
+    if (selectedBrowserSaveId && selectedBrowserSaveId !== "legacy") {
+      localSaveState.browserSaveId = selectedBrowserSaveId;
+    }
+    applySerializedGameState(resumeSnapshot);
+
+    const resumedNames = state.players.map((player) => player.name);
+    if (resumedNames.length >= 3 && resumedNames.length <= ONLINE_MAX_PLAYERS) {
+      refs.playerCount.value = String(resumedNames.length);
+      createNameInputs();
+      const inputs = refs.nameInputs.querySelectorAll("input");
+      resumedNames.forEach((name, idx) => {
+        if (inputs[idx]) inputs[idx].value = name;
+      });
+    }
+
+    if (sourceLabel) {
+      logEvent(`Resumed game from ${sourceLabel}.`);
+      setStatus(`Resumed game from ${sourceLabel}.`);
+    } else {
+      logEvent("Resumed saved game.");
+      setStatus("Resumed saved game.");
+    }
+    render();
+    recordGameAction("resume_game");
+    void refreshLatestSaveAvailability();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Failed to resume saved game.";
+    setStatus(message);
+    render();
+    window.alert(message);
+    void refreshLatestSaveAvailability();
+  }
+}
+
 function renderRoomPanel() {
   let statusText = "";
   const inRoom = isOnlineRoomActive();
+  const gameInProgress = state.phase !== "pregame";
+  const lobbyLocked = !inRoom && gameInProgress;
   const connectedNoRoom = onlineState.connected && !inRoom;
+  const showRollbackBtn = inRoom && onlineState.started;
   refs.copyRoomCodeBtn.classList.toggle("hidden", !inRoom);
   refs.leaveRoomBtn.classList.toggle("hidden", !inRoom);
+  refs.rollbackActionBtn.classList.toggle("hidden", !showRollbackBtn);
   refs.roomCodeDisplay.classList.toggle("hidden", !inRoom);
+  refs.roomSaveMeta.classList.toggle("hidden", !showRollbackBtn);
   refs.roomPlayersList.classList.toggle("hidden", !inRoom || onlineState.players.length === 0);
   refs.roomCodeDisplay.textContent = inRoom ? `Code: ${onlineState.roomCode}` : "";
 
-  refs.onlineName.disabled = inRoom;
-  refs.roomCodeInput.disabled = inRoom;
-  refs.createRoomBtn.disabled = inRoom;
-  refs.joinRoomBtn.disabled = inRoom;
+  refs.onlineName.disabled = inRoom || lobbyLocked;
+  refs.roomCodeInput.disabled = inRoom || lobbyLocked;
+  refs.createRoomBtn.disabled = inRoom || lobbyLocked;
+  refs.joinRoomBtn.disabled = inRoom || lobbyLocked;
+  refs.rollbackActionBtn.disabled = !showRollbackBtn || !isRoomHost() || onlineState.historyCount < 2;
 
   refs.playerCount.disabled = inRoom;
   refs.nameInputs.querySelectorAll("input").forEach((input) => {
@@ -699,6 +1279,13 @@ function renderRoomPanel() {
     });
   }
 
+  if (showRollbackBtn) {
+    const fileLabel = onlineState.saveFile || "pending";
+    refs.roomSaveMeta.textContent = `Saved actions: ${onlineState.historyCount} | File: ${fileLabel}`;
+  } else {
+    refs.roomSaveMeta.textContent = "";
+  }
+
   if (inRoom && !onlineState.started) {
     if (isRoomHost()) {
       if (onlineState.players.length < 3) {
@@ -718,6 +1305,8 @@ function renderRoomPanel() {
     } else {
       statusText = "Connected as spectator.";
     }
+  } else if (lobbyLocked) {
+    statusText = "Online room setup is locked while a game is in progress.";
   } else if (connectedNoRoom) {
     statusText = "Connected. Create or join a room.";
   } else if (!onlineState.connected) {
@@ -739,7 +1328,7 @@ function parsePositiveInt(raw) {
 function clampTurnSeconds(raw) {
   const parsed = parsePositiveInt(raw);
   if (parsed === null) return DEFAULT_TURN_SECONDS;
-  return Math.min(600, Math.max(10, parsed));
+  return Math.min(MAX_TURN_SECONDS, Math.max(MIN_TURN_SECONDS, parsed));
 }
 
 function randomChoice(arr) {
@@ -915,6 +1504,7 @@ function updateSetupCardVisibility() {
   const gameStarted = state.phase !== "pregame";
   refs.setupFields.classList.toggle("hidden", gameStarted);
   refs.startBtn.classList.toggle("hidden", gameStarted);
+  refs.resumeGameBtn.classList.toggle("hidden", gameStarted);
   refs.restartBtn.classList.toggle("hidden", !gameStarted);
 }
 
@@ -1424,7 +2014,6 @@ async function handleTurnTimeout() {
   if (!canRunTurnTimeoutAutomation()) return;
   if (state.turnTimeoutBusy) return;
   state.turnTimeoutBusy = true;
-  const shouldSync = isOnlineGameStarted();
   if (actionModalResolver) closeActionModal(null);
 
   try {
@@ -1434,7 +2023,7 @@ async function handleTurnTimeout() {
         restartTurnTimer();
       }
       render();
-      if (shouldSync) publishOnlineState({ force: true });
+      recordGameAction("turn_timeout");
       return;
     }
 
@@ -1464,7 +2053,7 @@ async function handleTurnTimeout() {
     } else {
       if (state.phase === "main" && !state.turnTimerActive) restartTurnTimer();
       render();
-      if (shouldSync) publishOnlineState({ force: true });
+      recordGameAction("turn_timeout");
     }
   } finally {
     state.turnTimeoutBusy = false;
@@ -1612,9 +2201,13 @@ function startGame(options = {}) {
   state.log = [];
   logEvent(`New game: ${names.join(", ")}.`);
   beginSetup(state.players);
+  resetLocalSaveSession();
+  if (!isOnlineGameStarted()) {
+    void startLocalSaveSession({ reason: "local_game_start" });
+  }
   render();
 
-  if (shouldSync && isOnlineGameStarted()) publishOnlineState({ force: true });
+  if (shouldSync || !isOnlineGameStarted()) recordGameAction("game_start");
 }
 
 function restartGame() {
@@ -1855,7 +2448,6 @@ function isClickableTile(tileIdx) {
 
 function onNodeClick(nodeIdx) {
   if (!assertLocalTurnControl()) return;
-  const shouldSync = isOnlineGameStarted();
 
   if (state.phase === "setup") {
     const setup = state.setup;
@@ -1879,7 +2471,7 @@ function onNodeClick(nodeIdx) {
       setup.expecting = "road";
       setup.lastSettlementNode = nodeIdx;
       setStatus(`${currentPlayerObj().name}: place adjacent road.`);
-      if (shouldSync) publishOnlineState({ force: true });
+      recordGameAction("setup_settlement");
     }
     render();
     return;
@@ -1904,12 +2496,11 @@ function onNodeClick(nodeIdx) {
     changed = buildCity(state.currentPlayer, nodeIdx);
   }
   render();
-  if (changed && shouldSync) publishOnlineState({ force: true });
+  if (changed) recordGameAction(state.mode === "city" ? "build_city" : "build_settlement");
 }
 
 function onEdgeClick(edgeIdx) {
   if (!assertLocalTurnControl()) return;
-  const shouldSync = isOnlineGameStarted();
 
   if (state.phase === "setup") {
     const setup = state.setup;
@@ -1921,7 +2512,7 @@ function onEdgeClick(edgeIdx) {
         logEvent(`${currentPlayerObj().name} gained starting resources.`);
       }
       advanceSetup();
-      if (shouldSync) publishOnlineState({ force: true });
+      recordGameAction("setup_road");
     }
     render();
     return;
@@ -1940,12 +2531,11 @@ function onEdgeClick(edgeIdx) {
   }
   const changed = buildRoad(state.currentPlayer, edgeIdx);
   render();
-  if (changed && shouldSync) publishOnlineState({ force: true });
+  if (changed) recordGameAction("build_road");
 }
 
 async function onTileClick(tileIdx) {
   if (!assertLocalTurnControl()) return;
-  const shouldSync = isOnlineGameStarted();
   if (state.phase !== "main") return;
   if (!(state.pendingRobberMove || state.mode === "robber")) return;
   if (!(await moveRobber(state.currentPlayer, tileIdx))) {
@@ -1958,7 +2548,7 @@ async function onTileClick(tileIdx) {
     setStatus("Robber moved. Continue your turn.");
   }
   render();
-  if (shouldSync) publishOnlineState({ force: true });
+  recordGameAction("move_robber");
 }
 
 function renderPlaceholderBoard() {
@@ -2322,7 +2912,18 @@ function renderRollHistogram() {
 
 function renderControls() {
   renderRoomPanel();
+  const hideOnlineRoomCard = state.phase !== "pregame" && !isOnlineRoomActive();
+  refs.roomCard.classList.toggle("hidden", hideOnlineRoomCard);
   updateSetupCardVisibility();
+  const canResumeGame = state.phase === "pregame" && !isOnlineRoomActive() && !resumeState.checking;
+  refs.resumeGameBtn.disabled = !canResumeGame;
+  if (resumeState.checking) {
+    refs.resumeGameBtn.title = "Checking for saved games...";
+  } else if (resumeState.latestFile) {
+    refs.resumeGameBtn.title = `Select from saved games (latest: ${resumeState.latestFile})`;
+  } else {
+    refs.resumeGameBtn.title = "Select a saved game to resume.";
+  }
   if (isOnlineRoomActive()) {
     refs.startBtn.textContent = "Start Room Game";
     const roomReady =
@@ -2482,7 +3083,6 @@ function render() {
 async function rollDice(options = {}) {
   const auto = options.auto === true;
   if (!auto && !assertLocalTurnControl()) return;
-  const shouldSync = isOnlineGameStarted();
   if (state.phase !== "main" || state.hasRolled || state.isRollingDice) return;
   const roll = 1 + Math.floor(Math.random() * 6) + 1 + Math.floor(Math.random() * 6);
   const finalPair = dicePairForTotal(roll);
@@ -2533,12 +3133,11 @@ async function rollDice(options = {}) {
     if (!auto) setStatus(`${currentPlayerObj().name}: choose actions, then end turn.`);
   }
   render();
-  if (shouldSync) publishOnlineState({ force: true });
+  recordGameAction("roll_dice");
 }
 
 function endTurn() {
   if (!assertLocalTurnControl()) return;
-  const shouldSync = isOnlineGameStarted();
   if (state.phase !== "main" || !state.hasRolled || state.pendingRobberMove || state.isRollingDice) return;
   state.currentPlayer = (state.currentPlayer + 1) % state.players.length;
   if (state.currentPlayer === 0) state.round += 1;
@@ -2553,12 +3152,11 @@ function endTurn() {
   logEvent(`Turn passed to ${currentPlayerObj().name}.`);
   restartTurnTimer();
   render();
-  if (shouldSync) publishOnlineState({ force: true });
+  recordGameAction("end_turn");
 }
 
 function bankTrade() {
   if (!assertLocalTurnControl()) return;
-  const shouldSync = isOnlineGameStarted();
   if (state.phase !== "main" || !state.hasRolled || state.pendingRobberMove || state.isRollingDice) return;
   const player = currentPlayerObj();
   const give = refs.tradeGive.value;
@@ -2580,12 +3178,11 @@ function bankTrade() {
   logEvent(`${player.name} traded 4 ${give} for 1 ${get}.`);
   setStatus(`${player.name} traded with the bank.`);
   render();
-  if (shouldSync) publishOnlineState({ force: true });
+  recordGameAction("bank_trade");
 }
 
 function playerTrade() {
   if (!assertLocalTurnControl()) return;
-  const shouldSync = isOnlineGameStarted();
   if (state.phase !== "main" || !state.hasRolled || state.pendingRobberMove || state.isRollingDice) return;
   const fromIdx = state.currentPlayer;
   const toIdx = Number(refs.p2pTarget.value);
@@ -2648,7 +3245,7 @@ function playerTrade() {
   logEvent(`${from.name} traded ${giveAmt} ${giveRes} for ${getAmt} ${getRes} with ${to.name}.`);
   setStatus("Trade completed.");
   render();
-  if (shouldSync) publishOnlineState({ force: true });
+  recordGameAction("player_trade");
 }
 
 function initTradeSelectors() {
@@ -2718,11 +3315,13 @@ function createNameInputs() {
 function bindEvents() {
   refs.playerCount.addEventListener("change", createNameInputs);
   refs.startBtn.addEventListener("click", startGame);
+  refs.resumeGameBtn.addEventListener("click", requestResumeGame);
   refs.restartBtn.addEventListener("click", restartGame);
   refs.createRoomBtn.addEventListener("click", requestCreateRoom);
   refs.joinRoomBtn.addEventListener("click", requestJoinRoom);
   refs.copyRoomCodeBtn.addEventListener("click", copyRoomCode);
   refs.leaveRoomBtn.addEventListener("click", requestLeaveRoom);
+  refs.rollbackActionBtn.addEventListener("click", requestRollbackAction);
   refs.roomCodeInput.addEventListener("input", () => {
     refs.roomCodeInput.value = refs.roomCodeInput.value.toUpperCase().replace(/[^A-Z0-9]/g, "");
   });
@@ -2785,6 +3384,7 @@ function init() {
   state.histogramOpen = false;
   setBoardDiceFaces(1, 2);
   render();
+  void refreshLatestSaveAvailability();
 }
 
 init();
