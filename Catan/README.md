@@ -56,6 +56,16 @@ CSS has been split into modular files:
 - `styles/theme-midnight.css` defines an alternate palette (activate with `data-theme="midnight"` on `<body>`).
 - `styles/layout.css` contains component and layout styling rules.
 
+## Python Validation + Tests
+
+The Python side now uses strict Pydantic models in `catan_models.py` for game setup and trade payload validation.
+
+Run tests with:
+
+```bash
+pytest -q tests
+```
+
 ## Terminal Version
 
 The original CLI implementation is still available:
