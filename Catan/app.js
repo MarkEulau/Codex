@@ -501,47 +501,53 @@ function hasPlayerTradeOption(playerIdx) {
   return false;
 }
 
-function isMainActionWindow() {
-  return (
-    state.phase === "main" &&
-    state.hasRolled &&
-    !state.pendingRobberMove &&
-    !state.isRollingDice
-  );
-}
-
-function actionAvailability(activePlayer) {
-  const canTakeActions = Boolean(activePlayer && isMainActionWindow());
-  const canBankTrade = Boolean(canTakeActions && hasBankTradeOption(activePlayer));
-  const canPlayerTrade = Boolean(
-    canTakeActions && refs.p2pTarget.options.length > 0 && hasPlayerTradeOption(state.currentPlayer)
-  );
-
-  return {
-    canTakeActions,
-    canBankTrade,
-    canPlayerTrade,
-    canRoll: state.phase === "main" && !state.hasRolled && !state.isRollingDice,
-    canEndTurn: state.phase === "main" && state.hasRolled && !state.pendingRobberMove && !state.isRollingDice,
-  };
-}
-
-function modeDisabledForPlayer(mode, player) {
-  if (!player) return true;
-  if (mode === "none") return false;
-  if (mode === "road") return !canAfford(player, COST.road);
-  if (mode === "settlement") return !canAfford(player, COST.settlement);
-  if (mode === "city") return !canAfford(player, COST.city);
-  return true;
-}
-
-function playerTradeTargetNames() {
-  const targets = [];
-  for (let idx = 0; idx < state.players.length; idx += 1) {
-    if (idx === state.currentPlayer) continue;
-    if (resourceCount(state.players[idx]) > 0) targets.push(state.players[idx].name);
+class TurnStateEvaluator {
+  static isMainActionWindow(gameState) {
+    return (
+      gameState.phase === "main" &&
+      gameState.hasRolled &&
+      !gameState.pendingRobberMove &&
+      !gameState.isRollingDice
+    );
   }
-  return targets;
+
+  static actionAvailability(gameState, activePlayer, targetOptionCount) {
+    const canTakeActions = Boolean(activePlayer && TurnStateEvaluator.isMainActionWindow(gameState));
+    const canBankTrade = Boolean(canTakeActions && hasBankTradeOption(activePlayer));
+    const canPlayerTrade = Boolean(
+      canTakeActions && targetOptionCount > 0 && hasPlayerTradeOption(gameState.currentPlayer)
+    );
+
+    return {
+      canTakeActions,
+      canBankTrade,
+      canPlayerTrade,
+      canRoll: gameState.phase === "main" && !gameState.hasRolled && !gameState.isRollingDice,
+      canEndTurn:
+        gameState.phase === "main" &&
+        gameState.hasRolled &&
+        !gameState.pendingRobberMove &&
+        !gameState.isRollingDice,
+    };
+  }
+
+  static modeDisabledForPlayer(mode, player) {
+    if (!player) return true;
+    if (mode === "none") return false;
+    if (mode === "road") return !canAfford(player, COST.road);
+    if (mode === "settlement") return !canAfford(player, COST.settlement);
+    if (mode === "city") return !canAfford(player, COST.city);
+    return true;
+  }
+
+  static playerTradeTargetNames(players, currentPlayerIdx) {
+    const targets = [];
+    for (let idx = 0; idx < players.length; idx += 1) {
+      if (idx === currentPlayerIdx) continue;
+      if (resourceCount(players[idx]) > 0) targets.push(players[idx].name);
+    }
+    return targets;
+  }
 }
 
 function turnContextText(player) {
@@ -1819,7 +1825,8 @@ function renderControls() {
   refs.statusText.textContent = state.status;
   refs.turnCallout.textContent = turnContextText(activePlayer);
 
-  const { canRoll, canEndTurn, canTakeActions, canBankTrade, canPlayerTrade } = actionAvailability(activePlayer);
+  const { canRoll, canEndTurn, canTakeActions, canBankTrade, canPlayerTrade } =
+    TurnStateEvaluator.actionAvailability(state, activePlayer, refs.p2pTarget.options.length);
   refs.rollBtn.disabled = !canRoll;
   refs.endTurnBtn.disabled = !canEndTurn;
 
@@ -1857,7 +1864,7 @@ function renderControls() {
   }
 
   if (canPlayerTrade) {
-    refs.p2pTradeHint.textContent = `Available players: ${playerTradeTargetNames().join(", ")}`;
+    refs.p2pTradeHint.textContent = `Available players: ${TurnStateEvaluator.playerTradeTargetNames(state.players, state.currentPlayer).join(", ")}`;
   } else {
     refs.p2pTradeHint.textContent = "";
   }
@@ -1875,7 +1882,7 @@ function renderControls() {
       btn.disabled = true;
       continue;
     }
-    btn.disabled = modeDisabledForPlayer(mode, activePlayer);
+    btn.disabled = TurnStateEvaluator.modeDisabledForPlayer(mode, activePlayer);
   }
 
   if (activePlayer && state.phase !== "pregame") {

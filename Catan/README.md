@@ -47,6 +47,15 @@ Then open:
 - Click legal spots highlighted on the board.
 - `End Turn` to pass to the next player.
 
+## Styling and Themes
+
+CSS has been split into modular files:
+
+- `style.css` loads all style modules.
+- `styles/theme-default.css` defines the default variable palette.
+- `styles/theme-midnight.css` defines an alternate palette (activate with `data-theme="midnight"` on `<body>`).
+- `styles/layout.css` contains component and layout styling rules.
+
 ## Terminal Version
 
 The original CLI implementation is still available:
