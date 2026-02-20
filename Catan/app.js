@@ -501,6 +501,49 @@ function hasPlayerTradeOption(playerIdx) {
   return false;
 }
 
+function isMainActionWindow() {
+  return (
+    state.phase === "main" &&
+    state.hasRolled &&
+    !state.pendingRobberMove &&
+    !state.isRollingDice
+  );
+}
+
+function actionAvailability(activePlayer) {
+  const canTakeActions = Boolean(activePlayer && isMainActionWindow());
+  const canBankTrade = Boolean(canTakeActions && hasBankTradeOption(activePlayer));
+  const canPlayerTrade = Boolean(
+    canTakeActions && refs.p2pTarget.options.length > 0 && hasPlayerTradeOption(state.currentPlayer)
+  );
+
+  return {
+    canTakeActions,
+    canBankTrade,
+    canPlayerTrade,
+    canRoll: state.phase === "main" && !state.hasRolled && !state.isRollingDice,
+    canEndTurn: state.phase === "main" && state.hasRolled && !state.pendingRobberMove && !state.isRollingDice,
+  };
+}
+
+function modeDisabledForPlayer(mode, player) {
+  if (!player) return true;
+  if (mode === "none") return false;
+  if (mode === "road") return !canAfford(player, COST.road);
+  if (mode === "settlement") return !canAfford(player, COST.settlement);
+  if (mode === "city") return !canAfford(player, COST.city);
+  return true;
+}
+
+function playerTradeTargetNames() {
+  const targets = [];
+  for (let idx = 0; idx < state.players.length; idx += 1) {
+    if (idx === state.currentPlayer) continue;
+    if (resourceCount(state.players[idx]) > 0) targets.push(state.players[idx].name);
+  }
+  return targets;
+}
+
 function turnContextText(player) {
   if (!player) return "Set players and start.";
   if (state.phase === "setup") {
@@ -1776,21 +1819,10 @@ function renderControls() {
   refs.statusText.textContent = state.status;
   refs.turnCallout.textContent = turnContextText(activePlayer);
 
-  const inMainPhase = state.phase === "main" && state.phase !== "gameover";
-  const canRoll = inMainPhase && !state.hasRolled && !state.isRollingDice;
+  const { canRoll, canEndTurn, canTakeActions, canBankTrade, canPlayerTrade } = actionAvailability(activePlayer);
   refs.rollBtn.disabled = !canRoll;
-
-  const canEndTurn = inMainPhase && state.hasRolled && !state.pendingRobberMove && !state.isRollingDice;
   refs.endTurnBtn.disabled = !canEndTurn;
 
-  const canTakeActions = inMainPhase && state.hasRolled && !state.pendingRobberMove && !state.isRollingDice;
-  const canBankTrade = Boolean(activePlayer && canTakeActions && hasBankTradeOption(activePlayer));
-  const canPlayerTrade = Boolean(
-    activePlayer &&
-      canTakeActions &&
-      refs.p2pTarget.options.length > 0 &&
-      hasPlayerTradeOption(state.currentPlayer)
-  );
   const hasTradeChoice = canBankTrade || canPlayerTrade;
   if (!hasTradeChoice) state.tradeMenuOpen = false;
   const showTradeMenu = hasTradeChoice && state.tradeMenuOpen;
@@ -1825,12 +1857,7 @@ function renderControls() {
   }
 
   if (canPlayerTrade) {
-    const targets = [];
-    for (let idx = 0; idx < state.players.length; idx += 1) {
-      if (idx === state.currentPlayer) continue;
-      if (resourceCount(state.players[idx]) > 0) targets.push(state.players[idx].name);
-    }
-    refs.p2pTradeHint.textContent = `Available players: ${targets.join(", ")}`;
+    refs.p2pTradeHint.textContent = `Available players: ${playerTradeTargetNames().join(", ")}`;
   } else {
     refs.p2pTradeHint.textContent = "";
   }
@@ -1848,23 +1875,7 @@ function renderControls() {
       btn.disabled = true;
       continue;
     }
-    if (mode === "none") {
-      btn.disabled = false;
-      continue;
-    }
-    if (mode === "road") {
-      btn.disabled = !canAfford(activePlayer, COST.road);
-      continue;
-    }
-    if (mode === "settlement") {
-      btn.disabled = !canAfford(activePlayer, COST.settlement);
-      continue;
-    }
-    if (mode === "city") {
-      btn.disabled = !canAfford(activePlayer, COST.city);
-      continue;
-    }
-    btn.disabled = true;
+    btn.disabled = modeDisabledForPlayer(mode, activePlayer);
   }
 
   if (activePlayer && state.phase !== "pregame") {
