@@ -1,0 +1,24 @@
+:root {
+  --ink: #231812;
+  --ink-soft: #3d2c21;
+  --paper: #ead6aa;
+  --paper-2: #d9bf86;
+  --panel: rgba(37, 25, 16, 0.7);
+  --panel-strong: rgba(48, 32, 20, 0.84);
+  --panel-glow: rgba(255, 215, 146, 0.2);
+  --border: #b18949;
+  --border-soft: rgba(177, 137, 73, 0.5);
+  --accent: #d08b37;
+  --accent-soft: #f0bf62;
+  --shadow: rgba(7, 5, 3, 0.42);
+  --shadow-strong: rgba(5, 3, 2, 0.66);
+  --ring: rgba(240, 191, 98, 0.36);
+  --frame: #4d3220;
+
+  --wood: #557e3f;
+  --brick: #9f4935;
+  --sheep: #73a46b;
+  --wheat: #cbac3b;
+  --ore: #6f7585;
+  --desert: #ccb27a;
+}

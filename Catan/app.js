@@ -501,6 +501,55 @@ function hasPlayerTradeOption(playerIdx) {
   return false;
 }
 
+class TurnStateEvaluator {
+  static isMainActionWindow(gameState) {
+    return (
+      gameState.phase === "main" &&
+      gameState.hasRolled &&
+      !gameState.pendingRobberMove &&
+      !gameState.isRollingDice
+    );
+  }
+
+  static actionAvailability(gameState, activePlayer, targetOptionCount) {
+    const canTakeActions = Boolean(activePlayer && TurnStateEvaluator.isMainActionWindow(gameState));
+    const canBankTrade = Boolean(canTakeActions && hasBankTradeOption(activePlayer));
+    const canPlayerTrade = Boolean(
+      canTakeActions && targetOptionCount > 0 && hasPlayerTradeOption(gameState.currentPlayer)
+    );
+
+    return {
+      canTakeActions,
+      canBankTrade,
+      canPlayerTrade,
+      canRoll: gameState.phase === "main" && !gameState.hasRolled && !gameState.isRollingDice,
+      canEndTurn:
+        gameState.phase === "main" &&
+        gameState.hasRolled &&
+        !gameState.pendingRobberMove &&
+        !gameState.isRollingDice,
+    };
+  }
+
+  static modeDisabledForPlayer(mode, player) {
+    if (!player) return true;
+    if (mode === "none") return false;
+    if (mode === "road") return !canAfford(player, COST.road);
+    if (mode === "settlement") return !canAfford(player, COST.settlement);
+    if (mode === "city") return !canAfford(player, COST.city);
+    return true;
+  }
+
+  static playerTradeTargetNames(players, currentPlayerIdx) {
+    const targets = [];
+    for (let idx = 0; idx < players.length; idx += 1) {
+      if (idx === currentPlayerIdx) continue;
+      if (resourceCount(players[idx]) > 0) targets.push(players[idx].name);
+    }
+    return targets;
+  }
+}
+
 function turnContextText(player) {
   if (!player) return "Set players and start.";
   if (state.phase === "setup") {
@@ -1776,21 +1825,11 @@ function renderControls() {
   refs.statusText.textContent = state.status;
   refs.turnCallout.textContent = turnContextText(activePlayer);
 
-  const inMainPhase = state.phase === "main" && state.phase !== "gameover";
-  const canRoll = inMainPhase && !state.hasRolled && !state.isRollingDice;
+  const { canRoll, canEndTurn, canTakeActions, canBankTrade, canPlayerTrade } =
+    TurnStateEvaluator.actionAvailability(state, activePlayer, refs.p2pTarget.options.length);
   refs.rollBtn.disabled = !canRoll;
-
-  const canEndTurn = inMainPhase && state.hasRolled && !state.pendingRobberMove && !state.isRollingDice;
   refs.endTurnBtn.disabled = !canEndTurn;
 
-  const canTakeActions = inMainPhase && state.hasRolled && !state.pendingRobberMove && !state.isRollingDice;
-  const canBankTrade = Boolean(activePlayer && canTakeActions && hasBankTradeOption(activePlayer));
-  const canPlayerTrade = Boolean(
-    activePlayer &&
-      canTakeActions &&
-      refs.p2pTarget.options.length > 0 &&
-      hasPlayerTradeOption(state.currentPlayer)
-  );
   const hasTradeChoice = canBankTrade || canPlayerTrade;
   if (!hasTradeChoice) state.tradeMenuOpen = false;
   const showTradeMenu = hasTradeChoice && state.tradeMenuOpen;
@@ -1825,12 +1864,7 @@ function renderControls() {
   }
 
   if (canPlayerTrade) {
-    const targets = [];
-    for (let idx = 0; idx < state.players.length; idx += 1) {
-      if (idx === state.currentPlayer) continue;
-      if (resourceCount(state.players[idx]) > 0) targets.push(state.players[idx].name);
-    }
-    refs.p2pTradeHint.textContent = `Available players: ${targets.join(", ")}`;
+    refs.p2pTradeHint.textContent = `Available players: ${TurnStateEvaluator.playerTradeTargetNames(state.players, state.currentPlayer).join(", ")}`;
   } else {
     refs.p2pTradeHint.textContent = "";
   }
@@ -1848,23 +1882,7 @@ function renderControls() {
       btn.disabled = true;
       continue;
     }
-    if (mode === "none") {
-      btn.disabled = false;
-      continue;
-    }
-    if (mode === "road") {
-      btn.disabled = !canAfford(activePlayer, COST.road);
-      continue;
-    }
-    if (mode === "settlement") {
-      btn.disabled = !canAfford(activePlayer, COST.settlement);
-      continue;
-    }
-    if (mode === "city") {
-      btn.disabled = !canAfford(activePlayer, COST.city);
-      continue;
-    }
-    btn.disabled = true;
+    btn.disabled = TurnStateEvaluator.modeDisabledForPlayer(mode, activePlayer);
   }
 
   if (activePlayer && state.phase !== "pregame") {
