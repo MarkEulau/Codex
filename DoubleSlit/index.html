@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Double Slit Interference Simulator</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" defer></script>
+  <script src="script.js" defer></script>
+</head>
+<body>
+  <main>
+    <h1>Double Slit Experiment Simulator</h1>
+    <p class="subtitle">
+      Inspired by 3Blue1Brown-style visuals: tune slit geometry and wavelength to watch elegant wave interference emerge from simple math.
+    </p>
+
+    <section class="card math">
+      <h2>Model (Fraunhofer Approximation)</h2>
+      <p>We model the scalar wave on a screen at distance <strong>L</strong> using small angles: sin θ ≈ x / L, sin φ ≈ y / L.</p>
+      <pre>
+ψ(x, y, t) = A · sinc(βx) · sinc(βy) · 2 cos(α) · exp(i(kL - ωt))
+
+βx = π a x / (λ L)      βy = π h y / (λ L)      α = π d x / (λ L)
+k = 2π/λ
+
+Intensity: I(x, y) = |ψ|² = 4 A² sinc²(βx) sinc²(βy) cos²(α)
+      </pre>
+      <p>
+        <strong>a</strong> = slit width, <strong>h</strong> = slit height, <strong>d</strong> = slit separation, <strong>λ</strong> = wavelength.
+      </p>
+    </section>
+
+    <section class="controls card">
+      <h2>Parameters</h2>
+      <div class="grid">
+        <label>Wavelength λ (nm)
+          <input id="wavelength" type="range" min="350" max="750" step="1" value="520" />
+          <span id="wavelengthValue"></span>
+        </label>
+        <label>Slit width a (μm)
+          <input id="slitWidth" type="range" min="10" max="120" step="1" value="35" />
+          <span id="slitWidthValue"></span>
+        </label>
+        <label>Slit height h (μm)
+          <input id="slitHeight" type="range" min="30" max="250" step="1" value="120" />
+          <span id="slitHeightValue"></span>
+        </label>
+        <label>Slit separation d (μm)
+          <input id="separation" type="range" min="40" max="300" step="1" value="140" />
+          <span id="separationValue"></span>
+        </label>
+        <label>Screen distance L (m)
+          <input id="distance" type="range" min="0.5" max="4" step="0.1" value="1.5" />
+          <span id="distanceValue"></span>
+        </label>
+        <label>Time phase ωt (rad)
+          <input id="phase" type="range" min="0" max="6.28" step="0.01" value="0" />
+          <span id="phaseValue"></span>
+        </label>
+      </div>
+    </section>
+
+    <section class="plots">
+      <div class="card">
+        <h2>Real part of wavefunction Re(ψ)</h2>
+        <div id="surfacePlot" class="plot"></div>
+      </div>
+      <div class="card">
+        <h2>Intensity pattern I = |ψ|²</h2>
+        <div id="intensityPlot" class="plot"></div>
+      </div>
+      <div class="card">
+        <h2>Centerline intensity (y = 0)</h2>
+        <div id="linePlot" class="plot"></div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
