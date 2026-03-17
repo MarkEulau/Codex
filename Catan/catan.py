@@ -7,6 +7,8 @@ import random
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
+from catan_models import GameConfig, PlayerConfig, TradeOffer
+
 
 RESOURCES = ["wood", "brick", "sheep", "wheat", "ore"]
 RESOURCE_COUNTS = {
@@ -46,6 +48,11 @@ def key_point(x: float, y: float) -> Tuple[int, int]:
 
 def can_afford(hand: Dict[str, int], cost: Dict[str, int]) -> bool:
     return all(hand.get(res, 0) >= amount for res, amount in cost.items())
+
+
+def validate_trade_offer(payload: Dict[str, object]) -> TradeOffer:
+    """Validate a trade payload and return a strict typed offer."""
+    return TradeOffer.model_validate(payload)
 
 
 def pay_cost(hand: Dict[str, int], cost: Dict[str, int]) -> None:
@@ -108,8 +115,9 @@ class Edge:
 
 class CatanGame:
     def __init__(self, players: List[str], seed: Optional[int] = None):
+        config = GameConfig(players=[PlayerConfig(name=name) for name in players])
         self.rng = random.Random(seed)
-        self.players: List[Player] = [Player(name=p) for p in players]
+        self.players: List[Player] = [Player(name=p.name) for p in config.players]
         self.tiles: List[Tile] = []
         self.nodes: List[Node] = []
         self.edges: List[Edge] = []
