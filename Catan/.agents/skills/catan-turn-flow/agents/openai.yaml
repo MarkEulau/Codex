@@ -1,0 +1,4 @@
+interface:
+  display_name: "Catan Turn Flow"
+  short_description: "Tune setup, timers, rolls, and actions"
+  default_prompt: "Use $catan-turn-flow to adjust setup flow, timer behavior, dice flow, or action gating."

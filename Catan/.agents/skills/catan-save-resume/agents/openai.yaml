@@ -1,0 +1,4 @@
+interface:
+  display_name: "Catan Save/Resume"
+  short_description: "Persist moves and restore saved games"
+  default_prompt: "Use $catan-save-resume to update autosave, rollback, or resume-game behavior."

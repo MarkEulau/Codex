@@ -1,0 +1,4 @@
+interface:
+  display_name: "Catan Premium UI"
+  short_description: "Polish board UI, HUD, and game feel"
+  default_prompt: "Use $catan-premium-ui to polish the board, HUD, animations, or premium game-client feel."
