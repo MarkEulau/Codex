@@ -39,6 +39,7 @@ Then open:
 ## Controls
 
 - `Start New Game` to deal a board.
+- `Resume Game` to load a locally saved game from this browser.
 - `Roll Dice` and, when you can afford builds, use the build popup on the left side of the board:
 - `Road`
 - `Settlement`
@@ -46,6 +47,7 @@ Then open:
 - `Clear`
 - Click legal spots highlighted on the board.
 - `End Turn` to pass to the next player.
+- The game autosaves locally after meaningful state changes. Resume works in the same browser profile that created the save.
 
 ## Terminal Version
 

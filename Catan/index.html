@@ -139,12 +139,14 @@
               </div>
               <div class="row">
                 <label for="turnSeconds">Turn Timer (sec)</label>
-                <input id="turnSeconds" type="number" min="10" step="1" value="60" />
+                <input id="turnSeconds" type="number" min="1" step="1" value="60" />
               </div>
               <div id="nameInputs"></div>
             </div>
             <button id="startBtn">Start New Game</button>
+            <button id="resumeBtn">Resume Game</button>
             <button id="restartBtn" class="hidden">Restart Game</button>
+            <p id="saveStatusText" class="save-status-text">No local saves yet.</p>
           </section>
 
           <section class="card" id="turnCard">
