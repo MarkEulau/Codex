@@ -1,0 +1,13 @@
+{
+  "name": "catan-browser-prototype",
+  "private": true,
+  "description": "Browser-first Catan prototype with lightweight Node unit tests for save and state logic.",
+  "scripts": {
+    "test": "node --test",
+    "test:unit": "node --test",
+    "test:coverage": "node --experimental-test-coverage --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

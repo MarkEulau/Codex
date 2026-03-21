@@ -14,6 +14,16 @@ Then open:
 
 - `http://localhost:8000/index.html`
 
+## Testing
+
+Run the current unit suite from the repo root:
+
+```bash
+npm test
+```
+
+The unit tests focus on shared save and state helpers used by the browser app. For the broader approach and the manual smoke-test checklist, see `docs/testing-strategy.md`.
+
 ## What Is Implemented (Graphical)
 
 - Rendered 19-hex board with proper resource tiles and number tokens.
