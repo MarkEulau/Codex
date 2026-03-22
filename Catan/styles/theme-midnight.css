@@ -1,0 +1,17 @@
+[data-theme="midnight"] {
+  --ink: #e8ebf7;
+  --ink-soft: #c3cee9;
+  --paper: #243357;
+  --paper-2: #1a2845;
+  --panel: rgba(16, 27, 50, 0.7);
+  --panel-strong: rgba(14, 24, 46, 0.84);
+  --panel-glow: rgba(125, 168, 255, 0.24);
+  --border: #6f95df;
+  --border-soft: rgba(111, 149, 223, 0.45);
+  --accent: #87b0ff;
+  --accent-soft: #b8d0ff;
+  --shadow: rgba(2, 8, 20, 0.58);
+  --shadow-strong: rgba(1, 4, 12, 0.72);
+  --ring: rgba(138, 175, 255, 0.32);
+  --frame: #132647;
+}
