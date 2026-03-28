@@ -42,7 +42,7 @@ if [ ! -d "${SCRIPT_DIR}/node_modules/ws" ]; then
 fi
 
 echo "Starting the Catan server on http://localhost:8000 ..."
-osascript <<'APPLESCRIPT' "${SCRIPT_DIR}"
+if ! osascript - "${SCRIPT_DIR}" <<'APPLESCRIPT'
 on run argv
   set repoPath to item 1 of argv
   tell application "Terminal"
@@ -51,6 +51,13 @@ on run argv
   end tell
 end run
 APPLESCRIPT
+then
+  echo "Failed to open Terminal and start the server."
+  echo "You can run it manually with:"
+  echo "  cd \"${SCRIPT_DIR}\" && npm start"
+  pause_for_exit
+  exit 1
+fi
 
 sleep 2
 open "http://localhost:8000"
