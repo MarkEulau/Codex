@@ -15,7 +15,7 @@ Then open:
 
 - `http://localhost:8000`
 
-On Windows, you can also double-click `run-catan.bat`. It installs dependencies if needed, starts the local server, and opens the app in your browser.
+On Windows, you can also double-click `run-catan.bat`. On macOS, double-click `run-catan.command`. Both launchers install dependencies if needed, start the local server, and open the app in your browser.
 
 ## Testing
 
