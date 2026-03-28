@@ -216,6 +216,8 @@ const state = {
 
 const refs = {
   board: document.getElementById("board"),
+  boardStage: document.querySelector(".board-stage"),
+  boardActionScrim: document.getElementById("boardActionScrim"),
   buildActionPopup: document.getElementById("buildActionPopup"),
   tradePromptPopup: document.getElementById("tradePromptPopup"),
   tradeActionPopup: document.getElementById("tradeActionPopup"),
@@ -418,9 +420,17 @@ function focusTradeTab(tab = state.activeTradeTab) {
   refs.bankTradeGiveGrid.querySelector(".trade-resource-btn:not(:disabled)")?.focus();
 }
 
+function closeTradeMenu({ resetDrafts: reset = true } = {}) {
+  state.tradeMenuOpen = false;
+  if (reset) resetTradeDrafts();
+  render();
+}
+
 function openTradeMenu(tab) {
+  state.mode = "none";
   state.activeTradeTab = tab;
   state.tradeMenuOpen = true;
+  setPinnedOrbDock(null);
   render();
   focusTradeTab(state.activeTradeTab);
 }
@@ -2172,10 +2182,11 @@ function setPinnedOrbDock(key = null) {
 
 function syncBoardHudVisibility() {
   const showHud = state.players.length > 0;
-  refs.boardOrbDock.classList.toggle("hidden", !showHud);
+  const showOrbDock = showHud && !state.tradeMenuOpen;
+  refs.boardOrbDock.classList.toggle("hidden", !showOrbDock);
   refs.boardPlayerHud.classList.toggle("hidden", !showHud);
   refs.boardOrbDock.classList.toggle("without-clock", refs.turnClock?.classList.contains("hidden"));
-  if (!showHud) setPinnedOrbDock(null);
+  if (!showOrbDock) setPinnedOrbDock(null);
 }
 
 function clearTurnTimerInterval() {
@@ -4698,7 +4709,6 @@ function renderControls() {
   refs.rollResultPopup.setAttribute("aria-hidden", showRollResultPopup ? "false" : "true");
   if (showRollResultPopup) refs.rollResultPopup.textContent = String(state.rollResultPopupValue);
   renderTurnClock();
-  syncBoardHudVisibility();
   refs.statusText.textContent = state.status;
   refs.turnCallout.textContent = turnContextText(activePlayer);
 
@@ -4750,9 +4760,15 @@ function renderControls() {
     resetTradeDrafts();
   }
   const showTradeMenu = hasTradeChoice && state.tradeMenuOpen;
+  refs.boardStage?.classList.toggle("trade-layer-open", showTradeMenu);
+  refs.boardActionScrim?.classList.toggle("hidden", !showTradeMenu);
+  refs.boardActionScrim?.setAttribute("aria-hidden", showTradeMenu ? "false" : "true");
+  syncBoardHudVisibility();
 
   refs.tradePromptPopup.classList.toggle("hidden", !hasTradeChoice || showTradeMenu);
   refs.tradeActionPopup.classList.toggle("hidden", !showTradeMenu);
+  refs.tradePromptPopup.setAttribute("aria-hidden", !hasTradeChoice || showTradeMenu ? "true" : "false");
+  refs.tradeActionPopup.setAttribute("aria-hidden", showTradeMenu ? "false" : "true");
   refs.tradeTabBar.classList.toggle("hidden", !showTradeMenu || !(canBankTrade && canPlayerTrade));
   refs.bankTradeSection.classList.toggle("hidden", !showTradeMenu || !canBankTrade || activeTradeTab !== "bank");
   refs.playerTradeSection.classList.toggle("hidden", !showTradeMenu || !canPlayerTrade || activeTradeTab !== "player");
@@ -4812,7 +4828,7 @@ function renderControls() {
   }
 
   const showBuildActionPopup = Boolean(
-    activePlayer && ((canTakeActions && hasAnyBuildByResources(activePlayer)) || canResolveFreeRoads)
+    activePlayer && !showTradeMenu && ((canTakeActions && hasAnyBuildByResources(activePlayer)) || canResolveFreeRoads)
   );
   refs.buildActionPopup.classList.toggle("hidden", !showBuildActionPopup);
   if (!showBuildActionPopup && (state.mode === "road" || state.mode === "settlement" || state.mode === "city")) {
@@ -5308,9 +5324,11 @@ function bindEvents() {
     switchTradeTab("player");
   });
   refs.closeTradeMenuBtn.addEventListener("click", () => {
-    state.tradeMenuOpen = false;
-    resetTradeDrafts();
-    render();
+    closeTradeMenu();
+  });
+  refs.boardActionScrim?.addEventListener("click", () => {
+    if (refs.tradeActionPopup.classList.contains("hidden")) return;
+    closeTradeMenu();
   });
   refs.tradeBtn.addEventListener("click", bankTrade);
   refs.p2pTradeBtn.addEventListener("click", playerTrade);
@@ -5324,6 +5342,7 @@ function bindEvents() {
     const cancelVisible = !refs.actionModalCancelBtn.classList.contains("hidden");
     if (event.key === "Escape" && actionModalResolver && cancelVisible) closeActionModal(null);
     if (event.key === "Escape" && hasPinnedOrbDock()) setPinnedOrbDock(null);
+    if (event.key === "Escape" && !refs.tradeActionPopup.classList.contains("hidden")) closeTradeMenu();
   });
 
   refs.modeButtons.forEach((btn) => {

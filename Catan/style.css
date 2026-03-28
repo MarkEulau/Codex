@@ -177,6 +177,20 @@ body::before {
   border-radius: 14px;
 }
 
+.board-action-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 28;
+  background:
+    radial-gradient(circle at 34% 24%, rgba(255, 235, 193, 0.12), transparent 34%),
+    linear-gradient(180deg, rgba(24, 17, 11, 0.18), rgba(14, 10, 7, 0.46));
+  backdrop-filter: blur(2px);
+}
+
+.board-stage.trade-layer-open #board {
+  filter: saturate(0.84) brightness(0.9);
+}
+
 .board-panel::before {
   content: "";
   position: absolute;
@@ -206,7 +220,12 @@ body::before {
   gap: 0.46rem;
   justify-items: start;
   align-content: start;
-  max-width: min(390px, 72vw);
+  max-width: min(430px, calc(100% - 1.24rem));
+  max-height: calc(100% - 1.24rem);
+}
+
+.left-action-stack > * {
+  max-width: 100%;
 }
 
 .board-top-right {
@@ -293,8 +312,13 @@ body::before {
 }
 
 .trade-action-popup {
-  width: min(356px, 64vw);
+  width: min(430px, 72vw);
+  max-height: min(calc(100% - 0.2rem), 560px);
+  overflow: auto;
+  overscroll-behavior: contain;
   padding: 0.46rem;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(218, 179, 110, 0.7) rgba(31, 21, 14, 0.7);
 }
 
 .trade-popup-head {
@@ -408,7 +432,7 @@ body::before {
   position: relative;
   width: 100%;
   min-width: 0;
-  min-height: 4.7rem;
+  min-height: 4.1rem;
   padding: 0.54rem 0.5rem 0.46rem 0.78rem;
   border-radius: 14px;
   border: 1px solid rgba(198, 160, 96, 0.5);
@@ -495,7 +519,7 @@ body::before {
 .trade-resource-btn {
   width: 100%;
   min-width: 0;
-  min-height: 5.4rem;
+  min-height: 4.55rem;
   padding: 0.42rem 0.32rem 0.36rem;
   border-radius: 14px;
   border: 1px solid rgba(198, 160, 96, 0.5);
@@ -543,8 +567,8 @@ body::before {
 }
 
 .trade-resource-icon {
-  width: 1.3rem;
-  height: 1.3rem;
+  width: 1.16rem;
+  height: 1.16rem;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -556,14 +580,14 @@ body::before {
 }
 
 .trade-resource-name {
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   font-weight: 800;
   text-transform: capitalize;
   line-height: 1.05;
 }
 
 .trade-resource-meta {
-  font-size: 0.6rem;
+  font-size: 0.56rem;
   line-height: 1.15;
   color: rgba(255, 230, 189, 0.82);
 }
@@ -2779,6 +2803,7 @@ input:focus-visible {
 
   .trade-action-popup {
     width: min(95vw, 420px);
+    max-height: min(calc(100dvh - 7.25rem), 72vh);
   }
 
   .trade-resource-grid {
