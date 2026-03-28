@@ -194,6 +194,11 @@ const state = {
     bank: { give: resourceMap(0), get: resourceMap(0) },
     player: { give: resourceMap(0), get: resourceMap(0) },
   },
+  discardDraft: {
+    playerIdx: null,
+    required: 0,
+    selection: resourceMap(0),
+  },
   bankShortage: null,
   status: "Set players and start.",
   log: [],
@@ -282,9 +287,16 @@ const refs = {
   actionModalText: document.getElementById("actionModalText"),
   actionModalOptions: document.getElementById("actionModalOptions"),
   actionModalCancelBtn: document.getElementById("actionModalCancelBtn"),
+  discardModal: document.getElementById("discardModal"),
+  discardModalTitle: document.getElementById("discardModalTitle"),
+  discardModalText: document.getElementById("discardModalText"),
+  discardResourceGrid: document.getElementById("discardResourceGrid"),
+  discardModalHint: document.getElementById("discardModalHint"),
+  discardSubmitBtn: document.getElementById("discardSubmitBtn"),
 };
 
 let actionModalResolver = null;
+let discardModalResolver = null;
 let turnTimerInterval = null;
 let pendingRoomCommand = null;
 let remoteSyncVersion = 0;
@@ -341,6 +353,14 @@ function createEmptyTradeDraft() {
   return {
     give: resourceMap(0),
     get: resourceMap(0),
+  };
+}
+
+function createEmptyDiscardDraft() {
+  return {
+    playerIdx: null,
+    required: 0,
+    selection: resourceMap(0),
   };
 }
 
@@ -406,6 +426,20 @@ function switchTradeTab(tab) {
   focusTradeTab(tab);
 }
 
+function ensureDiscardDraft() {
+  if (!state.discardDraft || typeof state.discardDraft !== "object") {
+    state.discardDraft = createEmptyDiscardDraft();
+    return;
+  }
+  if (!state.discardDraft.selection || typeof state.discardDraft.selection !== "object") {
+    state.discardDraft.selection = resourceMap(0);
+  }
+}
+
+function resetDiscardDraft() {
+  state.discardDraft = createEmptyDiscardDraft();
+}
+
 function tradeSelectionEntries(selection) {
   return RESOURCES.filter((resource) => (selection?.[resource] ?? 0) > 0).map((resource) => [
     resource,
@@ -417,6 +451,85 @@ function tradeSelectionSummary(selection) {
   const entries = tradeSelectionEntries(selection);
   if (entries.length === 0) return "none";
   return entries.map(([resource, amount]) => `${resource} x${amount}`).join(" | ");
+}
+
+function discardSelectionTotal(selection) {
+  return RESOURCES.reduce((total, resource) => {
+    const parsed = Number(selection?.[resource] ?? 0);
+    return total + (Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 0);
+  }, 0);
+}
+
+function discardDraftPlayer() {
+  ensureDiscardDraft();
+  const idx = Number(state.discardDraft.playerIdx);
+  if (!Number.isInteger(idx) || idx < 0 || idx >= state.players.length) return null;
+  return state.players[idx];
+}
+
+function normalizeDiscardDraft() {
+  ensureDiscardDraft();
+  const player = discardDraftPlayer();
+  state.discardDraft.required = Math.max(0, Math.floor(Number(state.discardDraft.required) || 0));
+
+  for (const resource of RESOURCES) {
+    const parsed = Number(state.discardDraft.selection[resource] || 0);
+    const value = Number.isFinite(parsed) ? Math.floor(parsed) : 0;
+    const limit = player ? player.hand[resource] : 0;
+    state.discardDraft.selection[resource] = Math.max(0, Math.min(value, limit));
+  }
+
+  let extra = discardSelectionTotal(state.discardDraft.selection) - state.discardDraft.required;
+  if (extra <= 0) return;
+  for (const resource of RESOURCES.slice().reverse()) {
+    if (extra <= 0) break;
+    const removable = Math.min(extra, state.discardDraft.selection[resource] || 0);
+    if (removable <= 0) continue;
+    state.discardDraft.selection[resource] -= removable;
+    extra -= removable;
+  }
+}
+
+function discardDraftState() {
+  ensureDiscardDraft();
+  normalizeDiscardDraft();
+  const player = discardDraftPlayer();
+  const required = state.discardDraft.required;
+  const selection = state.discardDraft.selection;
+  const selected = discardSelectionTotal(selection);
+  const remaining = Math.max(0, required - selected);
+  return {
+    player,
+    required,
+    selected,
+    remaining,
+    complete: Boolean(player && required > 0 && remaining === 0),
+    selection: { ...selection },
+    summary: tradeSelectionSummary(selection),
+  };
+}
+
+function canIncreaseDiscardDraft(resource) {
+  if (!RESOURCES.includes(resource)) return false;
+  normalizeDiscardDraft();
+  const player = discardDraftPlayer();
+  if (!player) return false;
+  if (discardSelectionTotal(state.discardDraft.selection) >= state.discardDraft.required) return false;
+  return (state.discardDraft.selection[resource] || 0) < player.hand[resource];
+}
+
+function adjustDiscardDraft(resource, direction = 1) {
+  if (!RESOURCES.includes(resource) || !discardModalResolver) return;
+  normalizeDiscardDraft();
+  if (direction > 0) {
+    if (!canIncreaseDiscardDraft(resource)) return;
+    state.discardDraft.selection[resource] += 1;
+  } else {
+    if ((state.discardDraft.selection[resource] || 0) <= 0) return;
+    state.discardDraft.selection[resource] -= 1;
+  }
+  normalizeDiscardDraft();
+  render();
 }
 
 function currentTradeTargetIndex() {
@@ -1102,6 +1215,11 @@ function hydrateGameSnapshot(snapshot, options = {}) {
   if (!restored) return false;
 
   Object.assign(state, restored);
+  if (discardModalResolver) closeDiscardModal(null);
+  else {
+    resetDiscardDraft();
+    clearDiscardModalUi();
+  }
   restorePairedTurnState();
 
   refs.playerCount.value = String(state.players.length);
@@ -2184,8 +2302,32 @@ function closeActionModal(result = null) {
   resolve(result);
 }
 
+function clearDiscardModalUi() {
+  refs.discardModal.classList.add("hidden");
+  refs.discardModal.setAttribute("aria-hidden", "true");
+  refs.discardModalTitle.textContent = "";
+  refs.discardModalText.textContent = "";
+  refs.discardResourceGrid.innerHTML = "";
+  refs.discardModalHint.textContent = "";
+  refs.discardSubmitBtn.disabled = true;
+}
+
+function closeDiscardModal(result = null) {
+  if (!discardModalResolver) {
+    clearDiscardModalUi();
+    resetDiscardDraft();
+    return;
+  }
+  const resolve = discardModalResolver;
+  discardModalResolver = null;
+  clearDiscardModalUi();
+  resetDiscardDraft();
+  resolve(result);
+}
+
 function showActionModal({ title, text, options, allowCancel = false }) {
   if (actionModalResolver) closeActionModal(null);
+  if (discardModalResolver) closeDiscardModal(null);
 
   refs.actionModalTitle.textContent = title;
   refs.actionModalText.textContent = text;
@@ -2205,6 +2347,34 @@ function showActionModal({ title, text, options, allowCancel = false }) {
 
   return new Promise((resolve) => {
     actionModalResolver = resolve;
+  });
+}
+
+function showDiscardModal(playerIdx, required) {
+  if (discardModalResolver) closeDiscardModal(null);
+  if (actionModalResolver) closeActionModal(null);
+
+  state.discardDraft = {
+    playerIdx,
+    required,
+    selection: resourceMap(0),
+  };
+
+  return new Promise((resolve) => {
+    discardModalResolver = resolve;
+    render();
+    refs.discardResourceGrid.querySelector(".trade-resource-btn:not(:disabled)")?.focus();
+  });
+}
+
+function submitDiscardDraft() {
+  if (!discardModalResolver) return;
+  const draft = discardDraftState();
+  if (!draft.complete) return;
+  closeDiscardModal({
+    playerIdx: state.discardDraft.playerIdx,
+    required: draft.required,
+    selection: draft.selection,
   });
 }
 
@@ -2283,6 +2453,7 @@ function turnBadgeText(player) {
   if (state.phase !== "main") return `${player.name} | Waiting`;
   const badgeRole = pairedTurnEnabled() ? (state.pairedTurn.stage === "primary" ? "P1" : "P2") : "TURN";
   if (state.mainStep === "before_roll") return `${player.name} | ${badgeRole} Roll`;
+  if (state.mainStep === "discard") return `${player.name} | ${badgeRole} Discard`;
   if (state.mainStep === "move_robber") return `${player.name} | ${badgeRole} Robber`;
   if (state.mainStep === "dev_card_resolution") return `${player.name} | ${badgeRole} Dev`;
   return `${player.name} | ${badgeRole} Actions`;
@@ -2558,27 +2729,34 @@ function distributeResources(roll) {
 }
 
 async function chooseDiscardResource(player, toDiscard) {
-  let remaining = toDiscard;
-  while (remaining > 0) {
+  const playerIdx = state.players.indexOf(player);
+  if (playerIdx < 0) return { auto: false, selection: null };
+  while (true) {
     if (state.turnTimeoutBusy) {
-      discardRandomResources(player, remaining);
-      remaining = 0;
-      break;
+      discardRandomResources(player, toDiscard);
+      render();
+      return { auto: true, selection: null };
     }
-    const options = RESOURCES.filter((res) => player.hand[res] > 0).map((res) => ({
-      label: `${res[0].toUpperCase() + res.slice(1)} (${player.hand[res]})`,
-      value: res,
-    }));
-    const picked = await showActionModal({
-      title: `${player.name} Must Discard`,
-      text: `Choose ${remaining} more card(s) to discard.`,
-      options,
-    });
-    if (!picked) continue;
-    player.hand[picked] -= 1;
-    state.bank[picked] += 1;
-    remaining -= 1;
+
+    const picked = await showDiscardModal(playerIdx, toDiscard);
+    if (picked?.auto || state.turnTimeoutBusy) {
+      discardRandomResources(player, toDiscard);
+      render();
+      return { auto: true, selection: null };
+    }
+    if (!picked) {
+      if (state.phase !== "main" || state.mainStep !== "discard") return { auto: false, selection: null };
+      continue;
+    }
+
+    for (const resource of RESOURCES) {
+      const amount = picked.selection[resource] || 0;
+      if (amount <= 0) continue;
+      player.hand[resource] -= amount;
+      state.bank[resource] += amount;
+    }
     render();
+    return { auto: false, selection: picked.selection };
   }
 }
 
@@ -2588,8 +2766,13 @@ async function handleRollSeven() {
     if (total <= 7) continue;
     const toDiscard = Math.floor(total / 2);
     state.mainStep = "discard";
-    await chooseDiscardResource(player, toDiscard);
-    logEvent(`${player.name} discarded ${toDiscard} card(s).`);
+    const discardResult = await chooseDiscardResource(player, toDiscard);
+    const summary = discardResult?.selection ? `: ${tradeSelectionSummary(discardResult.selection)}.` : ".";
+    logEvent(
+      discardResult?.auto
+        ? `${player.name} discarded ${toDiscard} card(s) (timer auto).`
+        : `${player.name} discarded ${toDiscard} card(s)${summary}`
+    );
   }
   state.pendingRobberMove = true;
   state.mainStep = "move_robber";
@@ -2801,6 +2984,9 @@ async function handleTurnTimeout() {
     if (state.mainStep === "before_roll") {
       logEvent(`${timedOutPlayerName} timed out. Auto-rolling.`);
       await rollDice({ auto: true });
+    } else if (state.mainStep === "discard") {
+      if (discardModalResolver) closeDiscardModal({ auto: true });
+      await delay(0);
     } else if (state.pendingRobberMove) {
       autoMoveRobberForPlayer(state.currentPlayer);
       state.pendingRobberMove = false;
@@ -2845,6 +3031,7 @@ function startMainPhase() {
   state.mode = "none";
   state.tradeMenuOpen = false;
   resetTradeDrafts();
+  resetDiscardDraft();
   state.setup = null;
   state.pairedTurn.enabled = pairedTurnEnabled();
   state.pairedTurn.primaryPlayer = 0;
@@ -2899,6 +3086,7 @@ function beginSetup(players) {
   state.mode = "none";
   state.tradeMenuOpen = false;
   resetTradeDrafts();
+  resetDiscardDraft();
   syncTurnStateMirror();
   setStatus(`${currentPlayerObj().name}: select settlement, then click again to confirm.`);
   logEvent("Setup started.");
@@ -2909,6 +3097,9 @@ function startGame(options = {}) {
   const fromRoom = options.fromRoom === true;
   const providedNames = Array.isArray(options.playerNames) ? options.playerNames : null;
   const shouldSync = options.sync !== false;
+
+  if (actionModalResolver) closeActionModal(null);
+  if (discardModalResolver) closeDiscardModal(null);
 
   if (isOnlineRoomActive() && !fromRoom) {
     if (!isRoomHost()) {
@@ -2997,6 +3188,7 @@ function restartGame() {
   if (!confirmed) return;
 
   if (actionModalResolver) closeActionModal(null);
+  if (discardModalResolver) closeDiscardModal(null);
 
   const existingNames = state.players.map((player) => player.name);
   if (existingNames.length >= 3 && existingNames.length <= ONLINE_MAX_PLAYERS) {
@@ -3906,6 +4098,70 @@ function renderTradeResourceGrid(kind, side, container) {
   }
 }
 
+function renderDiscardResourceGrid() {
+  if (!refs.discardResourceGrid) return;
+  refs.discardResourceGrid.innerHTML = "";
+
+  const draft = discardDraftState();
+  const player = draft.player;
+  if (!player) return;
+
+  for (const resource of RESOURCES) {
+    const count = draft.selection[resource] || 0;
+    const inHand = player.hand[resource] || 0;
+    const canAdd = canIncreaseDiscardDraft(resource);
+
+    const card = document.createElement("div");
+    card.className = `trade-resource-card${count > 0 ? " selected" : ""}${canAdd || count > 0 ? "" : " locked"}`;
+
+    const addBtn = document.createElement("button");
+    addBtn.type = "button";
+    addBtn.className = "trade-resource-btn";
+    addBtn.disabled = !canAdd;
+    addBtn.title = `${resource}: click to add 1`;
+    addBtn.addEventListener("click", () => adjustDiscardDraft(resource, 1));
+
+    const iconWrap = document.createElement("span");
+    iconWrap.className = "trade-resource-icon";
+    iconWrap.appendChild(createResourceIconSvg(resource));
+    addBtn.appendChild(iconWrap);
+
+    const name = document.createElement("span");
+    name.className = "trade-resource-name";
+    name.textContent = resource;
+    addBtn.appendChild(name);
+
+    const meta = document.createElement("span");
+    meta.className = "trade-resource-meta";
+    meta.textContent = `${inHand} in hand`;
+    addBtn.appendChild(meta);
+
+    const stepPill = document.createElement("span");
+    stepPill.className = "trade-resource-step";
+    stepPill.textContent = "+1";
+    addBtn.appendChild(stepPill);
+
+    card.appendChild(addBtn);
+
+    if (count > 0) {
+      const selected = document.createElement("span");
+      selected.className = "trade-resource-selected";
+      selected.textContent = String(count);
+      card.appendChild(selected);
+
+      const removeBtn = document.createElement("button");
+      removeBtn.type = "button";
+      removeBtn.className = "trade-resource-dec";
+      removeBtn.textContent = "-";
+      removeBtn.title = `Remove 1 ${resource}`;
+      removeBtn.addEventListener("click", () => adjustDiscardDraft(resource, -1));
+      card.appendChild(removeBtn);
+    }
+
+    refs.discardResourceGrid.appendChild(card);
+  }
+}
+
 function renderBuildPanel() {
   refs.buildPanel.innerHTML = "";
   if (state.players.length === 0) {
@@ -4241,6 +4497,27 @@ function renderControls() {
   syncBoardHudVisibility();
   refs.statusText.textContent = state.status;
   refs.turnCallout.textContent = turnContextText(activePlayer);
+
+  const discardPlayer = discardModalResolver ? discardDraftPlayer() : null;
+  const showDiscardModal = Boolean(discardModalResolver && state.mainStep === "discard" && discardPlayer);
+  if (!showDiscardModal) {
+    clearDiscardModalUi();
+  } else {
+    const draft = discardDraftState();
+    refs.discardModal.classList.remove("hidden");
+    refs.discardModal.setAttribute("aria-hidden", "false");
+    refs.discardModalTitle.textContent = `${discardPlayer.name} Must Discard`;
+    refs.discardModalText.textContent =
+      draft.remaining > 0
+        ? `Choose ${draft.remaining} more card(s) to discard.`
+        : "Review the discard combo, then submit to give up the cards.";
+    renderDiscardResourceGrid();
+    refs.discardModalHint.textContent =
+      draft.selected > 0
+        ? `Selected ${draft.selected}/${draft.required}: ${draft.summary}. Add or remove cards before submitting.`
+        : `Choose ${draft.required} card(s) to discard.`;
+    refs.discardSubmitBtn.disabled = !draft.complete;
+  }
 
   const inMainPhase = state.phase === "main" && state.phase !== "gameover";
   const canRoll = inMainPhase && !controlsLockedToOtherPlayer && canRollDiceNow();
@@ -4862,6 +5139,7 @@ function bindEvents() {
     resetTradeDrafts("player");
     if (!refs.tradeActionPopup.classList.contains("hidden")) render();
   });
+  refs.discardSubmitBtn.addEventListener("click", submitDiscardDraft);
   refs.actionModalCancelBtn.addEventListener("click", () => closeActionModal(null));
   refs.actionModal.addEventListener("click", (event) => {
     const cancelVisible = !refs.actionModalCancelBtn.classList.contains("hidden");
