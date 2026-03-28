@@ -58,6 +58,13 @@ const PLAYER_COLORS = ["#b93b2a", "#2b66be", "#d49419", "#2f8852", "#7a4d24", "#
 const HIGH_PROBABILITY_NUMBERS = new Set([6, 8]);
 const DICE_SUMS = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
 const DEFAULT_TURN_SECONDS = 60;
+const RESOURCE_FX_COLORS = {
+  wood: "rgba(118, 175, 82, 0.66)",
+  brick: "rgba(218, 134, 98, 0.68)",
+  sheep: "rgba(223, 241, 199, 0.72)",
+  wheat: "rgba(237, 203, 88, 0.7)",
+  ore: "rgba(174, 184, 206, 0.7)",
+};
 const {
   SAVE_SCHEMA_VERSION,
   SAVE_INDEX_KEY,
@@ -250,6 +257,7 @@ const refs = {
   histogramToggleBtn: document.getElementById("histogramToggleBtn"),
   rollHistogram: document.getElementById("rollHistogram"),
   statusText: document.getElementById("statusText"),
+  resourceFxLayer: document.getElementById("resourceFxLayer"),
   tableStats: document.getElementById("tableStats"),
   buildPanel: document.getElementById("buildPanel"),
   logList: document.getElementById("logList"),
@@ -2139,34 +2147,67 @@ function gainStartingResources(playerIdx, nodeIdx) {
 
 function distributeResources(roll) {
   const gains = state.players.map(() => resourceMap(0));
+  const grantedTotals = state.players.map(() => resourceMap(0));
   const shortageTotals = resourceMap(0);
+  const productionSources = [];
 
   for (const tile of state.tiles) {
     if (tile.resource === "desert") continue;
     if (tile.idx === state.robberTile) continue;
     if (tile.number !== roll) continue;
 
+    const tileContributions = new Map();
     for (const nodeIdx of tile.nodes) {
       const node = state.nodes[nodeIdx];
       if (node.owner === null) continue;
-      gains[node.owner][tile.resource] += node.isCity ? 2 : 1;
+      const amount = node.isCity ? 2 : 1;
+      gains[node.owner][tile.resource] += amount;
+      tileContributions.set(node.owner, (tileContributions.get(node.owner) || 0) + amount);
+    }
+
+    for (const [playerIdx, amount] of tileContributions.entries()) {
+      productionSources.push({
+        playerIdx,
+        resource: tile.resource,
+        amount,
+        tileIdx: tile.idx,
+      });
     }
   }
 
   const shortages = [];
+  const transferEffects = [];
   for (let i = 0; i < state.players.length; i += 1) {
     const payout = applyBankPayout(state.bank, gains[i], RESOURCES);
     state.bank = payout.bank;
     addResources(state.players[i], payout.granted);
+    for (const resource of RESOURCES) grantedTotals[i][resource] = payout.granted[resource];
     for (const resource of RESOURCES) shortageTotals[resource] += payout.shortage[resource];
     const totalShortage = RESOURCES.reduce((sum, resource) => sum + payout.shortage[resource], 0);
     if (totalShortage > 0) shortages.push(`${state.players[i].name}: short ${totalShortage}`);
+
+    for (const resource of RESOURCES) {
+      let remainingGranted = payout.granted[resource];
+      if (remainingGranted <= 0) continue;
+      for (const source of productionSources) {
+        if (source.playerIdx !== i || source.resource !== resource || remainingGranted <= 0) continue;
+        const grantedAmount = Math.min(source.amount, remainingGranted);
+        if (grantedAmount <= 0) continue;
+        transferEffects.push({
+          resource,
+          amount: grantedAmount,
+          source: { type: "tile", tileIdx: source.tileIdx },
+          target: { type: "player", playerIdx: i, resource },
+        });
+        remainingGranted -= grantedAmount;
+      }
+    }
   }
   state.bankShortage = RESOURCES.some((resource) => shortageTotals[resource] > 0) ? shortageTotals : null;
 
   const summary = state.players
     .map((p, idx) => {
-      const parts = RESOURCES.filter((res) => gains[idx][res] > 0).map((res) => `${gains[idx][res]} ${res}`);
+      const parts = RESOURCES.filter((res) => grantedTotals[idx][res] > 0).map((res) => `${grantedTotals[idx][res]} ${res}`);
       return parts.length > 0 ? `${p.name}: ${parts.join(", ")}` : null;
     })
     .filter(Boolean);
@@ -2182,6 +2223,8 @@ function distributeResources(roll) {
     logEvent(`Production on ${roll}: no resources generated.`);
     setStatus(`No resources generated on roll ${roll}.`);
   }
+
+  return transferEffects;
 }
 
 async function chooseDiscardResource(player, toDiscard) {
@@ -2805,6 +2848,213 @@ function createResourceIconSvg(resource) {
   return svg;
 }
 
+function prefersReducedMotion() {
+  return Boolean(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+}
+
+function resourceFxColor(resource) {
+  return RESOURCE_FX_COLORS[resource] || "#ffd79a";
+}
+
+function rectCenter(rect) {
+  return {
+    x: rect.left + rect.width / 2,
+    y: rect.top + rect.height / 2,
+  };
+}
+
+function rectVisible(rect, margin = 18) {
+  return (
+    rect.width > 0 &&
+    rect.height > 0 &&
+    rect.bottom > margin &&
+    rect.right > margin &&
+    rect.top < window.innerHeight - margin &&
+    rect.left < window.innerWidth - margin
+  );
+}
+
+function boardPointToViewport(boardX, boardY) {
+  if (!state.geometry) return null;
+  const rect = refs.board.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return null;
+  const scale = Math.min(rect.width / state.geometry.width, rect.height / state.geometry.height);
+  const insetX = (rect.width - state.geometry.width * scale) / 2;
+  const insetY = (rect.height - state.geometry.height * scale) / 2;
+  return {
+    x: rect.left + insetX + boardX * scale,
+    y: rect.top + insetY + boardY * scale,
+  };
+}
+
+function getPlayerCardEl(playerIdx) {
+  return refs.tableStats.querySelector(`[data-player-card="${playerIdx}"]`);
+}
+
+function getPlayerResourceChipEl(playerIdx, resource) {
+  return refs.tableStats.querySelector(`[data-player-idx="${playerIdx}"][data-resource="${resource}"]`);
+}
+
+function getBankTransferAnchorEl() {
+  const bankPopupVisible =
+    refs.bankTradeSection &&
+    refs.tradeActionPopup &&
+    !refs.tradeActionPopup.classList.contains("hidden") &&
+    !refs.bankTradeSection.classList.contains("hidden");
+  if (bankPopupVisible) return refs.bankTradeSection;
+  return refs.buildPanel.querySelector('[data-bank-anchor="tray"]');
+}
+
+function resolveTransferAnchorPoint(anchor, resource) {
+  if (!anchor) return null;
+
+  if (anchor.type === "tile") {
+    const tile = state.tiles[anchor.tileIdx];
+    if (!tile) return null;
+    return boardPointToViewport(sx(tile.cx), sy(tile.cy) - 35);
+  }
+
+  if (anchor.type === "bank") {
+    const bankAnchor = getBankTransferAnchorEl();
+    if (!bankAnchor) return null;
+    const rect = bankAnchor.getBoundingClientRect();
+    return rectVisible(rect, 0) ? rectCenter(rect) : null;
+  }
+
+  if (anchor.type === "player") {
+    const chip = getPlayerResourceChipEl(anchor.playerIdx, anchor.resource || resource);
+    if (chip) {
+      const chipRect = chip.getBoundingClientRect();
+      if (rectVisible(chipRect, 0)) return rectCenter(chipRect);
+    }
+    const card = getPlayerCardEl(anchor.playerIdx);
+    if (!card) return null;
+    const cardRect = card.getBoundingClientRect();
+    return rectVisible(cardRect, 0) ? rectCenter(cardRect) : null;
+  }
+
+  return null;
+}
+
+function pulseResourceChip(playerIdx, resource, direction, amount, delayMs = 0) {
+  if (amount <= 0) return;
+  const chip = getPlayerResourceChipEl(playerIdx, resource);
+  if (!chip) return;
+
+  window.setTimeout(() => {
+    if (!chip.isConnected) return;
+    const pulseToken = `${Date.now()}-${Math.random()}`;
+    chip.dataset.fxPulseToken = pulseToken;
+    chip.style.setProperty("--resource-fx-glow", resourceFxColor(resource));
+    chip.classList.remove("resource-chip-receiving", "resource-chip-sending");
+    void chip.offsetWidth;
+    chip.classList.add(direction === "send" ? "resource-chip-sending" : "resource-chip-receiving");
+
+    const delta = document.createElement("span");
+    delta.className = `resource-chip-delta ${direction === "send" ? "out" : "in"}`;
+    delta.textContent = `${direction === "send" ? "-" : "+"}${amount}`;
+    chip.appendChild(delta);
+    delta.addEventListener("animationend", () => delta.remove(), { once: true });
+
+    window.setTimeout(() => {
+      if (!chip.isConnected) return;
+      if (chip.dataset.fxPulseToken === pulseToken) {
+        chip.classList.remove("resource-chip-receiving", "resource-chip-sending");
+      }
+    }, 900);
+  }, Math.max(0, delayMs));
+}
+
+function createResourceTransferToken({ resource, amount, from, to, delayMs, durationMs }) {
+  if (!refs.resourceFxLayer) return;
+
+  const token = document.createElement("div");
+  token.className = "resource-transfer-token";
+  token.style.left = `${from.x}px`;
+  token.style.top = `${from.y}px`;
+  token.style.setProperty("--dx", `${to.x - from.x}px`);
+  token.style.setProperty("--dy", `${to.y - from.y}px`);
+  token.style.setProperty("--dx1", `${(to.x - from.x) * 0.08}px`);
+  token.style.setProperty("--dy1", `${(to.y - from.y) * 0.08 - 5}px`);
+  token.style.setProperty("--dx2", `${(to.x - from.x) * 0.84}px`);
+  token.style.setProperty("--dy2", `${(to.y - from.y) * 0.84 - 10}px`);
+  token.style.setProperty("--flight-delay", `${delayMs}ms`);
+  token.style.setProperty("--flight-duration", `${durationMs}ms`);
+  token.style.setProperty("--resource-glow", resourceFxColor(resource));
+
+  const iconWrap = document.createElement("span");
+  iconWrap.className = "resource-transfer-icon";
+  iconWrap.appendChild(createResourceIconSvg(resource));
+  token.appendChild(iconWrap);
+
+  if (amount > 1) {
+    const amountBadge = document.createElement("span");
+    amountBadge.className = "resource-transfer-amount";
+    amountBadge.textContent = String(amount);
+    token.appendChild(amountBadge);
+  }
+
+  refs.resourceFxLayer.appendChild(token);
+  window.requestAnimationFrame(() => {
+    token.classList.add("launch");
+  });
+
+  const cleanup = () => token.remove();
+  token.addEventListener("animationend", cleanup, { once: true });
+  window.setTimeout(cleanup, delayMs + durationMs + 240);
+}
+
+function playResourceTransferEffects(transfers) {
+  if (!Array.isArray(transfers) || transfers.length === 0) return;
+  const reduceMotion = prefersReducedMotion();
+
+  transfers.forEach((transfer, index) => {
+    if (!transfer || !transfer.resource || transfer.amount <= 0) return;
+
+    const startDelay = Math.min(420, index * 70);
+    if (transfer.source?.type === "player") {
+      pulseResourceChip(
+        transfer.source.playerIdx,
+        transfer.source.resource || transfer.resource,
+        "send",
+        transfer.amount,
+        startDelay
+      );
+    }
+
+    let arrivalDelay = startDelay;
+    if (!reduceMotion) {
+      const from = resolveTransferAnchorPoint(transfer.source, transfer.resource);
+      const to = resolveTransferAnchorPoint(transfer.target, transfer.resource);
+      if (from && to) {
+        const distance = Math.hypot(to.x - from.x, to.y - from.y);
+        if (distance >= 18) {
+          const durationMs = Math.max(560, Math.min(980, Math.round(560 + distance * 0.42)));
+          createResourceTransferToken({
+            resource: transfer.resource,
+            amount: transfer.amount,
+            from,
+            to,
+            delayMs: startDelay,
+            durationMs,
+          });
+          arrivalDelay = startDelay + Math.round(durationMs * 0.62);
+        }
+      }
+    }
+
+    if (transfer.target?.type === "player") {
+      pulseResourceChip(
+        transfer.target.playerIdx,
+        transfer.target.resource || transfer.resource,
+        "receive",
+        transfer.amount,
+        arrivalDelay
+      );
+    }
+  });
+}
+
 function appendResourceIcon(layer, tile) {
   const g = el("g", {
     class: "resource-icon",
@@ -3186,6 +3436,7 @@ function renderTableStats() {
     const card = document.createElement("div");
     card.className = `player-card ${idx === state.currentPlayer ? "current" : ""}`;
     card.style.setProperty("--turn-color", player.color);
+    card.dataset.playerCard = String(idx);
 
     const nameRow = document.createElement("div");
     nameRow.className = "player-name";
@@ -3226,6 +3477,8 @@ function renderTableStats() {
       const chip = document.createElement("div");
       chip.className = "resource-chip";
       chip.title = `${resource}: ${player.hand[resource]}`;
+      chip.dataset.playerIdx = String(idx);
+      chip.dataset.resource = resource;
 
       const iconWrap = document.createElement("span");
       iconWrap.className = "resource-chip-icon";
@@ -3423,6 +3676,7 @@ function renderBuildPanel() {
 
   const bankTray = document.createElement("div");
   bankTray.className = "build-chip";
+  bankTray.dataset.bankAnchor = "tray";
   const bankTrayHead = document.createElement("div");
   bankTrayHead.className = "build-chip-head";
   const bankTrayLabel = document.createElement("span");
@@ -3731,9 +3985,13 @@ async function rollDice(options = {}) {
       await handleRollSeven();
     }
   } else {
-    distributeResources(roll);
+    const transferEffects = distributeResources(roll);
     state.mainStep = "main_actions";
     if (!auto) setStatus(`${currentPlayerObj().name}: choose actions, then end turn.`);
+    render();
+    playResourceTransferEffects(transferEffects);
+    recordGameAction("roll_dice");
+    return;
   }
   render();
   recordGameAction("roll_dice");
@@ -3772,7 +4030,22 @@ function bankTrade() {
   state.bankShortage = null;
   logEvent(`${currentPlayerObj().name} traded ${trade.rate} ${give} for 1 ${get}.`);
   setStatus(`${currentPlayerObj().name} traded with the bank at ${trade.rate}:1.`);
+  const transferEffects = [
+    {
+      resource: give,
+      amount: trade.rate,
+      source: { type: "player", playerIdx: state.currentPlayer, resource: give },
+      target: { type: "bank" },
+    },
+    {
+      resource: get,
+      amount: 1,
+      source: { type: "bank" },
+      target: { type: "player", playerIdx: state.currentPlayer, resource: get },
+    },
+  ];
   render();
+  playResourceTransferEffects(transferEffects);
   recordGameAction("bank_trade");
 }
 
@@ -3845,7 +4118,22 @@ function playerTrade() {
   state.bankShortage = null;
   logEvent(`${from.name} traded ${giveAmt} ${giveRes} for ${getAmt} ${getRes} with ${to.name}.`);
   setStatus("Trade completed.");
+  const transferEffects = [
+    {
+      resource: giveRes,
+      amount: giveAmt,
+      source: { type: "player", playerIdx: fromIdx, resource: giveRes },
+      target: { type: "player", playerIdx: toIdx, resource: giveRes },
+    },
+    {
+      resource: getRes,
+      amount: getAmt,
+      source: { type: "player", playerIdx: toIdx, resource: getRes },
+      target: { type: "player", playerIdx: fromIdx, resource: getRes },
+    },
+  ];
   render();
+  playResourceTransferEffects(transferEffects);
   recordGameAction("player_trade");
 }
 
