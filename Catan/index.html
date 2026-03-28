@@ -93,25 +93,43 @@
             <div id="turnClock" class="turn-clock hidden" aria-hidden="true">
               <span id="turnClockText" class="turn-clock-text">0</span>
             </div>
-            <section id="boardHud" class="board-hud hidden" aria-label="Table stats">
-              <button
-                id="tableStatsToggleBtn"
-                class="table-stats-toggle"
-                type="button"
-                aria-expanded="false"
-                aria-controls="boardHudPanel"
-                aria-label="Toggle table stats"
-              >
-                <span class="table-stats-toggle-text">Stats</span>
-              </button>
-              <div id="boardHudPanel" class="board-hud-panel">
-                <div class="hud-top">
-                  <h2>Table Stats</h2>
+            <div id="boardOrbDock" class="board-orb-dock hidden" aria-label="Build and trade tools">
+              <section id="buildDock" class="orb-dock" aria-label="Build costs">
+                <button
+                  id="buildDockToggleBtn"
+                  class="orb-toggle"
+                  type="button"
+                  aria-expanded="false"
+                  aria-controls="buildDockPanel"
+                  aria-label="Toggle build costs"
+                >
+                  <span class="orb-toggle-text">
+                    <span>Build</span>
+                    <span>Costs</span>
+                  </span>
+                </button>
+                <div id="buildDockPanel" class="orb-panel">
                   <div id="buildPanel" class="build-panel"></div>
                 </div>
-                <div id="tableStats" class="table-stats"></div>
-              </div>
-            </section>
+              </section>
+              <section id="tradeDock" class="orb-dock" aria-label="Trade information">
+                <button
+                  id="tradeDockToggleBtn"
+                  class="orb-toggle"
+                  type="button"
+                  aria-expanded="false"
+                  aria-controls="tradeDockPanel"
+                  aria-label="Toggle trade information"
+                >
+                  <span class="orb-toggle-text">
+                    <span>Trade</span>
+                  </span>
+                </button>
+                <div id="tradeDockPanel" class="orb-panel">
+                  <div id="tradePanel" class="build-panel"></div>
+                </div>
+              </section>
+            </div>
             <div id="diceRollStage" class="dice-roll-stage hidden" aria-hidden="true">
               <div id="boardDieA" class="board-die die-a" data-face="1" aria-hidden="true">
                 <div class="die-cube">
@@ -138,6 +156,9 @@
             <aside id="rollHistogram" class="roll-histogram-panel hidden" aria-hidden="true"></aside>
             <svg id="board" aria-label="Catan board"></svg>
           </div>
+          <section id="boardPlayerHud" class="board-hud hidden" aria-label="Player table stats">
+            <div id="tableStats" class="table-stats"></div>
+          </section>
         </section>
 
         <aside class="side-panel">

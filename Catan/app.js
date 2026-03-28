@@ -243,8 +243,11 @@ const refs = {
   turnBadgeText: document.getElementById("turnBadgeText"),
   turnClock: document.getElementById("turnClock"),
   turnClockText: document.getElementById("turnClockText"),
-  boardHud: document.getElementById("boardHud"),
-  tableStatsToggleBtn: document.getElementById("tableStatsToggleBtn"),
+  boardOrbDock: document.getElementById("boardOrbDock"),
+  buildDock: document.getElementById("buildDock"),
+  buildDockToggleBtn: document.getElementById("buildDockToggleBtn"),
+  tradeDock: document.getElementById("tradeDock"),
+  tradeDockToggleBtn: document.getElementById("tradeDockToggleBtn"),
   diceRollStage: document.getElementById("diceRollStage"),
   boardDieA: document.getElementById("boardDieA"),
   boardDieB: document.getElementById("boardDieB"),
@@ -252,8 +255,10 @@ const refs = {
   histogramToggleBtn: document.getElementById("histogramToggleBtn"),
   rollHistogram: document.getElementById("rollHistogram"),
   statusText: document.getElementById("statusText"),
+  boardPlayerHud: document.getElementById("boardPlayerHud"),
   tableStats: document.getElementById("tableStats"),
   buildPanel: document.getElementById("buildPanel"),
+  tradePanel: document.getElementById("tradePanel"),
   logList: document.getElementById("logList"),
   modeButtons: Array.from(document.querySelectorAll(".mode-btn")),
   actionModal: document.getElementById("actionModal"),
@@ -1693,23 +1698,39 @@ function renderTurnClock() {
   refs.turnClockText.textContent = String(secondsLeft);
 }
 
-function isBoardHudPinnedOpen() {
-  return Boolean(refs.boardHud && refs.boardHud.classList.contains("is-pinned"));
+function boardOrbDockEntries() {
+  return [
+    { key: "build", root: refs.buildDock, button: refs.buildDockToggleBtn },
+    { key: "trade", root: refs.tradeDock, button: refs.tradeDockToggleBtn },
+  ];
 }
 
-function setBoardHudPinned(open) {
-  if (!refs.boardHud || !refs.tableStatsToggleBtn) return;
-  refs.boardHud.classList.toggle("is-pinned", open);
-  refs.tableStatsToggleBtn.setAttribute("aria-expanded", open ? "true" : "false");
-  if (!open) refs.tableStatsToggleBtn.blur();
+function isOrbDockPinned(key) {
+  return boardOrbDockEntries().some(
+    (entry) => entry.key === key && entry.root && entry.root.classList.contains("is-pinned")
+  );
+}
+
+function hasPinnedOrbDock() {
+  return boardOrbDockEntries().some((entry) => entry.root && entry.root.classList.contains("is-pinned"));
+}
+
+function setPinnedOrbDock(key = null) {
+  boardOrbDockEntries().forEach((entry) => {
+    if (!entry.root || !entry.button) return;
+    const open = entry.key === key;
+    entry.root.classList.toggle("is-pinned", open);
+    entry.button.setAttribute("aria-expanded", open ? "true" : "false");
+    if (!open) entry.button.blur();
+  });
 }
 
 function syncBoardHudVisibility() {
-  if (!refs.boardHud) return;
   const showHud = state.players.length > 0;
-  refs.boardHud.classList.toggle("hidden", !showHud);
-  refs.boardHud.classList.toggle("without-clock", refs.turnClock?.classList.contains("hidden"));
-  if (!showHud) setBoardHudPinned(false);
+  refs.boardOrbDock.classList.toggle("hidden", !showHud);
+  refs.boardPlayerHud.classList.toggle("hidden", !showHud);
+  refs.boardOrbDock.classList.toggle("without-clock", refs.turnClock?.classList.contains("hidden"));
+  if (!showHud) setPinnedOrbDock(null);
 }
 
 function clearTurnTimerInterval() {
@@ -3377,37 +3398,6 @@ function renderBuildPanel() {
     wrap.appendChild(card);
   });
 
-  const canBankTrade = canAct && hasBankTradeOption(player);
-  const bankTrade = document.createElement("div");
-  bankTrade.className = `build-chip ${canBankTrade ? "ok" : "locked"}`;
-
-  const bankHead = document.createElement("div");
-  bankHead.className = "build-chip-head";
-
-  const bankLabel = document.createElement("span");
-  bankLabel.className = "build-chip-label";
-  bankLabel.textContent = "Bank Trade";
-  bankHead.appendChild(bankLabel);
-
-  const bankState = document.createElement("span");
-  bankState.className = "build-chip-state";
-  bankState.textContent = canBankTrade ? "Ready" : "Not Ready";
-  bankHead.appendChild(bankState);
-
-  bankTrade.appendChild(bankHead);
-  appendCostChips(
-    bankTrade,
-    RESOURCES.reduce((acc, resource) => {
-      acc[resource] = 4;
-      return acc;
-    }, {})
-  );
-  const bankMeta = document.createElement("div");
-  bankMeta.className = "resource-row";
-  bankMeta.textContent = `Best rate: ${RESOURCES.map((resource) => `${resource} ${resolveHarborTradeRate(state, state.currentPlayer, resource)}:1`).join(" | ")}`;
-  bankTrade.appendChild(bankMeta);
-  wrap.appendChild(bankTrade);
-
   const playableDevCards = ["knight", "road_building", "year_of_plenty", "monopoly"].filter((cardType) =>
     canPlayDevelopmentCard(player.devCards, cardType, { mainStep: state.mainStep })
   );
@@ -3442,6 +3432,77 @@ function renderBuildPanel() {
     wrap.appendChild(devTray);
   }
 
+  refs.buildPanel.appendChild(wrap);
+}
+
+function renderTradePanel() {
+  refs.tradePanel.innerHTML = "";
+  if (state.players.length === 0) {
+    refs.tradePanel.textContent = "Start a game to see trade options.";
+    return;
+  }
+
+  const player = currentPlayerObj();
+  const canAct = canTakeMainActions();
+  const availableTargets = state.players
+    .filter((entry, idx) => idx !== state.currentPlayer && resourceCount(entry) > 0)
+    .map((entry) => entry.name);
+  const canBankTrade = canAct && hasBankTradeOption(player);
+  const canPlayerTrade = canAct && availableTargets.length > 0 && hasPlayerTradeOption(state.currentPlayer);
+
+  const wrap = document.createElement("div");
+  wrap.className = "build-grid trade-grid";
+
+  const title = document.createElement("div");
+  title.className = "build-title";
+  title.textContent = `Trade (${player.name})`;
+  wrap.appendChild(title);
+
+  const bankTrade = document.createElement("div");
+  bankTrade.className = `build-chip ${canBankTrade ? "ok" : "locked"}`;
+
+  const bankHead = document.createElement("div");
+  bankHead.className = "build-chip-head";
+  const bankLabel = document.createElement("span");
+  bankLabel.className = "build-chip-label";
+  bankLabel.textContent = "Bank Trade";
+  bankHead.appendChild(bankLabel);
+
+  const bankState = document.createElement("span");
+  bankState.className = "build-chip-state";
+  bankState.textContent = canBankTrade ? "Ready" : "Not Ready";
+  bankHead.appendChild(bankState);
+  bankTrade.appendChild(bankHead);
+
+  const bankDetail = document.createElement("div");
+  bankDetail.className = "resource-row";
+  bankDetail.textContent = `Best rate: ${RESOURCES.map((resource) => `${resource} ${resolveHarborTradeRate(state, state.currentPlayer, resource)}:1`).join(" | ")}`;
+  bankTrade.appendChild(bankDetail);
+  wrap.appendChild(bankTrade);
+
+  const playerTrade = document.createElement("div");
+  playerTrade.className = `build-chip ${canPlayerTrade ? "ok" : "locked"}`;
+  const playerTradeHead = document.createElement("div");
+  playerTradeHead.className = "build-chip-head";
+  const playerTradeLabel = document.createElement("span");
+  playerTradeLabel.className = "build-chip-label";
+  playerTradeLabel.textContent = "Player Trade";
+  playerTradeHead.appendChild(playerTradeLabel);
+  const playerTradeState = document.createElement("span");
+  playerTradeState.className = "build-chip-state";
+  playerTradeState.textContent = canPlayerTrade ? "Ready" : "Waiting";
+  playerTradeHead.appendChild(playerTradeState);
+  playerTrade.appendChild(playerTradeHead);
+
+  const playerTradeDetail = document.createElement("div");
+  playerTradeDetail.className = "resource-row";
+  playerTradeDetail.textContent =
+    availableTargets.length > 0
+      ? `Targets: ${availableTargets.join(", ")}`
+      : "No opponents currently have cards to trade.";
+  playerTrade.appendChild(playerTradeDetail);
+  wrap.appendChild(playerTrade);
+
   const bankTray = document.createElement("div");
   bankTray.className = "build-chip";
   const bankTrayHead = document.createElement("div");
@@ -3451,24 +3512,26 @@ function renderBuildPanel() {
   bankTrayLabel.textContent = "Bank";
   bankTrayHead.appendChild(bankTrayLabel);
   bankTray.appendChild(bankTrayHead);
+
   const bankTrayDetail = document.createElement("div");
   bankTrayDetail.className = "resource-row";
   bankTrayDetail.textContent = RESOURCES.map((resource) => `${resource} ${state.bank[resource]}`).join(" | ");
   bankTray.appendChild(bankTrayDetail);
+
   if (state.bankShortage) {
-    const shortageRow = document.createElement("div");
-    shortageRow.className = "resource-row";
     const shortages = RESOURCES.filter((resource) => state.bankShortage[resource] > 0).map(
       (resource) => `${resource} short ${state.bankShortage[resource]}`
     );
     if (shortages.length > 0) {
+      const shortageRow = document.createElement("div");
+      shortageRow.className = "resource-row";
       shortageRow.textContent = `Recent shortage: ${shortages.join(" | ")}`;
       bankTray.appendChild(shortageRow);
     }
   }
   wrap.appendChild(bankTray);
 
-  refs.buildPanel.appendChild(wrap);
+  refs.tradePanel.appendChild(wrap);
 }
 
 function renderLog() {
@@ -3701,6 +3764,7 @@ function render() {
   renderRollHistogram();
   renderTableStats();
   renderBuildPanel();
+  renderTradePanel();
   renderLog();
 }
 
@@ -4117,17 +4181,21 @@ function bindEvents() {
   });
   refs.rollBtn.addEventListener("click", rollDice);
   refs.endTurnBtn.addEventListener("click", endTurn);
-  refs.tableStatsToggleBtn.addEventListener("click", (event) => {
+  refs.buildDockToggleBtn.addEventListener("click", (event) => {
     event.stopPropagation();
-    setBoardHudPinned(!isBoardHudPinnedOpen());
+    setPinnedOrbDock(isOrbDockPinned("build") ? null : "build");
   });
-  refs.boardHud.addEventListener("click", (event) => {
+  refs.tradeDockToggleBtn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    setPinnedOrbDock(isOrbDockPinned("trade") ? null : "trade");
+  });
+  refs.boardOrbDock.addEventListener("click", (event) => {
     event.stopPropagation();
   });
   document.addEventListener("click", (event) => {
-    if (!isBoardHudPinnedOpen()) return;
-    if (refs.boardHud.contains(event.target)) return;
-    setBoardHudPinned(false);
+    if (!hasPinnedOrbDock()) return;
+    if (refs.boardOrbDock.contains(event.target)) return;
+    setPinnedOrbDock(null);
   });
   refs.histogramToggleBtn.addEventListener("click", () => {
     if (state.phase !== "main" && state.phase !== "gameover") return;
@@ -4153,7 +4221,7 @@ function bindEvents() {
   window.addEventListener("keydown", (event) => {
     const cancelVisible = !refs.actionModalCancelBtn.classList.contains("hidden");
     if (event.key === "Escape" && actionModalResolver && cancelVisible) closeActionModal(null);
-    if (event.key === "Escape" && isBoardHudPinnedOpen()) setBoardHudPinned(false);
+    if (event.key === "Escape" && hasPinnedOrbDock()) setPinnedOrbDock(null);
   });
 
   refs.modeButtons.forEach((btn) => {
