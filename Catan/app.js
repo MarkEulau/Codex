@@ -373,6 +373,15 @@ function currentTradeTargetIndex() {
   return idx;
 }
 
+function resourceCardsInCirculation(resource) {
+  if (!RESOURCES.includes(resource)) return 0;
+  let total = Number(state.bank?.[resource] ?? 0) || 0;
+  for (const player of state.players) {
+    total += Number(player?.hand?.[resource] ?? 0) || 0;
+  }
+  return total;
+}
+
 function tradeStepAmount(kind, side, resource) {
   if (kind === "bank" && side === "give") return resolveHarborTradeRate(state, state.currentPlayer, resource);
   return 1;
@@ -386,7 +395,7 @@ function tradeResourceLimit(kind, side, resource) {
   if (side === "give") return currentPlayerObj().hand[resource];
   const targetIdx = currentTradeTargetIndex();
   if (targetIdx === null) return 0;
-  return state.players[targetIdx].hand[resource];
+  return resourceCardsInCirculation(resource);
 }
 
 function normalizeTradeDraft(kind) {
@@ -528,15 +537,9 @@ function playerTradeDraftState() {
   }
 
   const from = state.players[state.currentPlayer];
-  const to = state.players[targetIdx];
   for (const [resource, amount] of giveEntries) {
     if (from.hand[resource] < amount) {
       return { ok: false, reason: `${from.name} does not have ${amount} ${resource}.` };
-    }
-  }
-  for (const [resource, amount] of getEntries) {
-    if (to.hand[resource] < amount) {
-      return { ok: false, reason: `${to.name} does not have ${amount} ${resource}.` };
     }
   }
 
@@ -4217,6 +4220,14 @@ function playerTrade() {
     setStatus("Trade declined.");
     render();
     return;
+  }
+
+  for (const [resource, amount] of draft.getEntries) {
+    if (to.hand[resource] < amount) {
+      setStatus(`${to.name} cannot fulfill ${amount} ${resource}.`);
+      render();
+      return;
+    }
   }
 
   from.hand = applyResourceDelta(from.hand, draft.getSelection, RESOURCES);
