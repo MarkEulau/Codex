@@ -41,8 +41,30 @@
                   <h3>Trade</h3>
                   <button id="closeTradeMenuBtn" type="button">Close</button>
                 </div>
+                <div id="tradeTabBar" class="trade-tab-bar" role="tablist" aria-label="Trade type">
+                  <button
+                    id="bankTradeTabBtn"
+                    class="trade-tab-btn"
+                    type="button"
+                    role="tab"
+                    aria-controls="bankTradeSection"
+                    aria-selected="true"
+                  >
+                    Bank Trade
+                  </button>
+                  <button
+                    id="playerTradeTabBtn"
+                    class="trade-tab-btn"
+                    type="button"
+                    role="tab"
+                    aria-controls="playerTradeSection"
+                    aria-selected="false"
+                  >
+                    Player Trade
+                  </button>
+                </div>
                 <div class="trade-popup-grid">
-                  <div id="bankTradeSection" class="trade-popup-card">
+                  <div id="bankTradeSection" class="trade-popup-card" role="tabpanel" aria-labelledby="bankTradeTabBtn">
                     <h4 id="bankTradeTitle">Bank Trade</h4>
                     <div class="trade-picker-group">
                       <div class="trade-picker-label">Give</div>
@@ -56,8 +78,8 @@
                     <p id="bankTradeHint" class="trade-hint"></p>
                   </div>
 
-                  <div id="playerTradeSection" class="trade-popup-card">
-                    <h4>Player</h4>
+                  <div id="playerTradeSection" class="trade-popup-card" role="tabpanel" aria-labelledby="playerTradeTabBtn">
+                    <h4>Player Trade</h4>
                     <div class="row trade-popup-row">
                       <label for="p2pTarget">With</label>
                       <select id="p2pTarget"></select>

@@ -189,6 +189,7 @@ const state = {
   pendingRobberMove: false,
   mode: "none", // none | road | settlement | city | robber
   tradeMenuOpen: false,
+  activeTradeTab: "bank",
   tradeDrafts: {
     bank: { give: resourceMap(0), get: resourceMap(0) },
     player: { give: resourceMap(0), get: resourceMap(0) },
@@ -211,6 +212,9 @@ const refs = {
   openBankTradeBtn: document.getElementById("openBankTradeBtn"),
   openPlayerTradeBtn: document.getElementById("openPlayerTradeBtn"),
   closeTradeMenuBtn: document.getElementById("closeTradeMenuBtn"),
+  tradeTabBar: document.getElementById("tradeTabBar"),
+  bankTradeTabBtn: document.getElementById("bankTradeTabBtn"),
+  playerTradeTabBtn: document.getElementById("playerTradeTabBtn"),
   bankTradeSection: document.getElementById("bankTradeSection"),
   bankTradeTitle: document.getElementById("bankTradeTitle"),
   playerTradeSection: document.getElementById("playerTradeSection"),
@@ -360,6 +364,46 @@ function resetTradeDrafts(kind = null) {
   }
   state.tradeDrafts.bank = createEmptyTradeDraft();
   state.tradeDrafts.player = createEmptyTradeDraft();
+}
+
+function normalizeActiveTradeTab(canBankTrade, canPlayerTrade) {
+  if (canBankTrade && canPlayerTrade) {
+    if (state.activeTradeTab !== "bank" && state.activeTradeTab !== "player") {
+      state.activeTradeTab = "bank";
+    }
+    return state.activeTradeTab;
+  }
+  if (canBankTrade) {
+    state.activeTradeTab = "bank";
+    return state.activeTradeTab;
+  }
+  if (canPlayerTrade) {
+    state.activeTradeTab = "player";
+    return state.activeTradeTab;
+  }
+  state.activeTradeTab = "bank";
+  return state.activeTradeTab;
+}
+
+function focusTradeTab(tab = state.activeTradeTab) {
+  if (tab === "player") {
+    refs.p2pTarget.focus();
+    return;
+  }
+  refs.bankTradeGiveGrid.querySelector(".trade-resource-btn:not(:disabled)")?.focus();
+}
+
+function openTradeMenu(tab) {
+  state.activeTradeTab = tab;
+  state.tradeMenuOpen = true;
+  render();
+  focusTradeTab(state.activeTradeTab);
+}
+
+function switchTradeTab(tab) {
+  state.activeTradeTab = tab;
+  render();
+  focusTradeTab(tab);
 }
 
 function tradeSelectionEntries(selection) {
@@ -4219,6 +4263,7 @@ function renderControls() {
       hasPlayerTradeOption(state.currentPlayer)
   );
   const hasTradeChoice = canBankTrade || canPlayerTrade;
+  const activeTradeTab = normalizeActiveTradeTab(canBankTrade, canPlayerTrade);
   if (!hasTradeChoice) {
     state.tradeMenuOpen = false;
     resetTradeDrafts();
@@ -4227,13 +4272,22 @@ function renderControls() {
 
   refs.tradePromptPopup.classList.toggle("hidden", !hasTradeChoice || showTradeMenu);
   refs.tradeActionPopup.classList.toggle("hidden", !showTradeMenu);
-  refs.bankTradeSection.classList.toggle("hidden", !canBankTrade);
-  refs.playerTradeSection.classList.toggle("hidden", !canPlayerTrade);
+  refs.tradeTabBar.classList.toggle("hidden", !showTradeMenu || !(canBankTrade && canPlayerTrade));
+  refs.bankTradeSection.classList.toggle("hidden", !showTradeMenu || !canBankTrade || activeTradeTab !== "bank");
+  refs.playerTradeSection.classList.toggle("hidden", !showTradeMenu || !canPlayerTrade || activeTradeTab !== "player");
   refs.openBankTradeBtn.classList.toggle("hidden", !canBankTrade);
   refs.openPlayerTradeBtn.classList.toggle("hidden", !canPlayerTrade);
   refs.openBankTradeBtn.disabled = !canBankTrade;
   refs.openPlayerTradeBtn.disabled = !canPlayerTrade;
   refs.closeTradeMenuBtn.disabled = !hasTradeChoice;
+  refs.bankTradeTabBtn.classList.toggle("hidden", !canBankTrade);
+  refs.playerTradeTabBtn.classList.toggle("hidden", !canPlayerTrade);
+  refs.bankTradeTabBtn.classList.toggle("active", activeTradeTab === "bank");
+  refs.playerTradeTabBtn.classList.toggle("active", activeTradeTab === "player");
+  refs.bankTradeTabBtn.setAttribute("aria-selected", activeTradeTab === "bank" ? "true" : "false");
+  refs.playerTradeTabBtn.setAttribute("aria-selected", activeTradeTab === "player" ? "true" : "false");
+  refs.bankTradeTabBtn.setAttribute("tabindex", activeTradeTab === "bank" ? "0" : "-1");
+  refs.playerTradeTabBtn.setAttribute("tabindex", activeTradeTab === "player" ? "0" : "-1");
 
   normalizeTradeDraft("bank");
   normalizeTradeDraft("player");
@@ -4783,15 +4837,19 @@ function bindEvents() {
   });
   refs.openBankTradeBtn.addEventListener("click", () => {
     if (refs.tradePromptPopup.classList.contains("hidden")) return;
-    state.tradeMenuOpen = true;
-    render();
-    refs.bankTradeGiveGrid.querySelector(".trade-resource-btn:not(:disabled)")?.focus();
+    openTradeMenu("bank");
   });
   refs.openPlayerTradeBtn.addEventListener("click", () => {
     if (refs.tradePromptPopup.classList.contains("hidden")) return;
-    state.tradeMenuOpen = true;
-    render();
-    refs.p2pTarget.focus();
+    openTradeMenu("player");
+  });
+  refs.bankTradeTabBtn.addEventListener("click", () => {
+    if (refs.tradeActionPopup.classList.contains("hidden")) return;
+    switchTradeTab("bank");
+  });
+  refs.playerTradeTabBtn.addEventListener("click", () => {
+    if (refs.tradeActionPopup.classList.contains("hidden")) return;
+    switchTradeTab("player");
   });
   refs.closeTradeMenuBtn.addEventListener("click", () => {
     state.tradeMenuOpen = false;
