@@ -93,6 +93,25 @@
             <div id="turnClock" class="turn-clock hidden" aria-hidden="true">
               <span id="turnClockText" class="turn-clock-text">0</span>
             </div>
+            <section id="boardHud" class="board-hud hidden" aria-label="Table stats">
+              <button
+                id="tableStatsToggleBtn"
+                class="table-stats-toggle"
+                type="button"
+                aria-expanded="false"
+                aria-controls="boardHudPanel"
+                aria-label="Toggle table stats"
+              >
+                <span class="table-stats-toggle-text">Stats</span>
+              </button>
+              <div id="boardHudPanel" class="board-hud-panel">
+                <div class="hud-top">
+                  <h2>Table Stats</h2>
+                  <div id="buildPanel" class="build-panel"></div>
+                </div>
+                <div id="tableStats" class="table-stats"></div>
+              </div>
+            </section>
             <div id="diceRollStage" class="dice-roll-stage hidden" aria-hidden="true">
               <div id="boardDieA" class="board-die die-a" data-face="1" aria-hidden="true">
                 <div class="die-cube">
@@ -119,13 +138,6 @@
             <aside id="rollHistogram" class="roll-histogram-panel hidden" aria-hidden="true"></aside>
             <svg id="board" aria-label="Catan board"></svg>
           </div>
-          <section class="board-hud">
-            <div class="hud-top">
-              <h2>Table Stats</h2>
-              <div id="buildPanel" class="build-panel"></div>
-            </div>
-            <div id="tableStats" class="table-stats"></div>
-          </section>
         </section>
 
         <aside class="side-panel">

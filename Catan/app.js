@@ -243,6 +243,8 @@ const refs = {
   turnBadgeText: document.getElementById("turnBadgeText"),
   turnClock: document.getElementById("turnClock"),
   turnClockText: document.getElementById("turnClockText"),
+  boardHud: document.getElementById("boardHud"),
+  tableStatsToggleBtn: document.getElementById("tableStatsToggleBtn"),
   diceRollStage: document.getElementById("diceRollStage"),
   boardDieA: document.getElementById("boardDieA"),
   boardDieB: document.getElementById("boardDieB"),
@@ -1689,6 +1691,25 @@ function renderTurnClock() {
   refs.turnClock.style.setProperty("--turn-clock-color", activePlayer ? activePlayer.color : "#f0bf62");
   refs.turnClock.classList.toggle("urgent", state.turnTimerActive && secondsLeft <= 5);
   refs.turnClockText.textContent = String(secondsLeft);
+}
+
+function isBoardHudPinnedOpen() {
+  return Boolean(refs.boardHud && refs.boardHud.classList.contains("is-pinned"));
+}
+
+function setBoardHudPinned(open) {
+  if (!refs.boardHud || !refs.tableStatsToggleBtn) return;
+  refs.boardHud.classList.toggle("is-pinned", open);
+  refs.tableStatsToggleBtn.setAttribute("aria-expanded", open ? "true" : "false");
+  if (!open) refs.tableStatsToggleBtn.blur();
+}
+
+function syncBoardHudVisibility() {
+  if (!refs.boardHud) return;
+  const showHud = state.players.length > 0;
+  refs.boardHud.classList.toggle("hidden", !showHud);
+  refs.boardHud.classList.toggle("without-clock", refs.turnClock?.classList.contains("hidden"));
+  if (!showHud) setBoardHudPinned(false);
 }
 
 function clearTurnTimerInterval() {
@@ -3546,6 +3567,7 @@ function renderControls() {
   refs.rollResultPopup.setAttribute("aria-hidden", showRollResultPopup ? "false" : "true");
   if (showRollResultPopup) refs.rollResultPopup.textContent = String(state.rollResultPopupValue);
   renderTurnClock();
+  syncBoardHudVisibility();
   refs.statusText.textContent = state.status;
   refs.turnCallout.textContent = turnContextText(activePlayer);
 
@@ -4095,6 +4117,18 @@ function bindEvents() {
   });
   refs.rollBtn.addEventListener("click", rollDice);
   refs.endTurnBtn.addEventListener("click", endTurn);
+  refs.tableStatsToggleBtn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    setBoardHudPinned(!isBoardHudPinnedOpen());
+  });
+  refs.boardHud.addEventListener("click", (event) => {
+    event.stopPropagation();
+  });
+  document.addEventListener("click", (event) => {
+    if (!isBoardHudPinnedOpen()) return;
+    if (refs.boardHud.contains(event.target)) return;
+    setBoardHudPinned(false);
+  });
   refs.histogramToggleBtn.addEventListener("click", () => {
     if (state.phase !== "main" && state.phase !== "gameover") return;
     state.histogramOpen = !state.histogramOpen;
@@ -4119,6 +4153,7 @@ function bindEvents() {
   window.addEventListener("keydown", (event) => {
     const cancelVisible = !refs.actionModalCancelBtn.classList.contains("hidden");
     if (event.key === "Escape" && actionModalResolver && cancelVisible) closeActionModal(null);
+    if (event.key === "Escape" && isBoardHudPinnedOpen()) setBoardHudPinned(false);
   });
 
   refs.modeButtons.forEach((btn) => {
