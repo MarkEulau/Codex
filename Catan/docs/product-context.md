@@ -42,9 +42,9 @@ This document captures the product direction distilled from earlier project conv
 
 ## Current Repo Reality
 
-- The current repository contains a browser prototype in `index.html`, `style.css`, and `app.js`, plus a CLI version in `catan.py`.
-- Earlier conversations discussed additional systems such as `server.js`, room codes, hosted multiplayer, save-file APIs, rollback endpoints, and stable tunnel hosting.
-- Treat those backend and hosting ideas as roadmap context unless matching files are present in the current worktree.
+- The current repository contains a browser prototype in `index.html`, `style.css`, and `app.js`, a local Node server in `server.js`, and a CLI version in `catan.py`.
+- The current worktree now includes room-code multiplayer, local save APIs, save journaling to disk, and rollback for room games.
+- Hosted deployment, reconnect hardening, and production tunnel setup are still roadmap work until the matching code exists here.
 
 ## Implementation Order To Prefer
 

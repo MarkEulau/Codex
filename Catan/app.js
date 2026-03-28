@@ -52,6 +52,8 @@ const BOARD_RADIUS = 2;
 const HEX_SIZE = 74;
 const BOARD_PADDING = 36;
 const SVG_NS = "http://www.w3.org/2000/svg";
+const ONLINE_MAX_PLAYERS = 4;
+const ROOM_CODE_REGEX = /^[A-Z0-9]{4,6}$/;
 
 const state = {
   players: [],
@@ -104,9 +106,20 @@ const refs = {
   turnSeconds: document.getElementById("turnSeconds"),
   nameInputs: document.getElementById("nameInputs"),
   startBtn: document.getElementById("startBtn"),
-  resumeBtn: document.getElementById("resumeBtn"),
+  resumeGameBtn: document.getElementById("resumeGameBtn"),
   restartBtn: document.getElementById("restartBtn"),
-  saveStatusText: document.getElementById("saveStatusText"),
+  roomCard: document.getElementById("roomCard"),
+  onlineName: document.getElementById("onlineName"),
+  roomCodeInput: document.getElementById("roomCodeInput"),
+  createRoomBtn: document.getElementById("createRoomBtn"),
+  joinRoomBtn: document.getElementById("joinRoomBtn"),
+  copyRoomCodeBtn: document.getElementById("copyRoomCodeBtn"),
+  leaveRoomBtn: document.getElementById("leaveRoomBtn"),
+  rollbackActionBtn: document.getElementById("rollbackActionBtn"),
+  roomStatusText: document.getElementById("roomStatusText"),
+  roomCodeDisplay: document.getElementById("roomCodeDisplay"),
+  roomSaveMeta: document.getElementById("roomSaveMeta"),
+  roomPlayersList: document.getElementById("roomPlayersList"),
   rollBtn: document.getElementById("rollBtn"),
   endTurnBtn: document.getElementById("endTurnBtn"),
   tradeBtn: document.getElementById("tradeBtn"),
@@ -150,6 +163,38 @@ const refs = {
 
 let actionModalResolver = null;
 let turnTimerInterval = null;
+let pendingRoomCommand = null;
+let remoteSyncVersion = 0;
+let roomStatusOverride = "";
+
+const onlineState = {
+  socket: null,
+  connected: false,
+  clientId: "",
+  roomCode: "",
+  hostId: "",
+  started: false,
+  players: [],
+  seatMap: [],
+  version: 0,
+  historyCount: 0,
+  saveFile: "",
+};
+
+const localSaveState = {
+  sessionId: "",
+  saveFile: "",
+  queue: [],
+  starting: false,
+  flushing: false,
+  token: 0,
+};
+
+const resumeState = {
+  checking: false,
+  hasSave: false,
+  latestFile: "",
+};
 
 function resourceMap(init = 0) {
   const out = {};
@@ -205,21 +250,11 @@ function getSaveSummaries() {
 function refreshSaveCatalogState() {
   const summaries = getSaveSummaries();
   state.availableSaveCount = summaries.length;
-  if (state.phase === "pregame" && !state.currentSaveId) {
-    state.saveStatus =
-      summaries.length === 0
-        ? "No local saves yet."
-        : `${summaries.length} local save${summaries.length === 1 ? "" : "s"} available in this browser.`;
-  }
   return summaries;
 }
 
-function persistCurrentGame() {
+function persistCurrentGame(action = "sync") {
   const storage = getLocalStorageHandle();
-  if (!storage) {
-    state.saveStatus = "Local saving is unavailable in this browser.";
-    return false;
-  }
   if (!state.currentSaveId) state.currentSaveId = makeSaveId();
   if (!state.saveCreatedAt) state.saveCreatedAt = new Date().toISOString();
 
@@ -231,10 +266,15 @@ function persistCurrentGame() {
   });
   if (!snapshot) {
     refreshSaveCatalogState();
-    return false;
+    return null;
   }
 
   const summary = buildSaveSummary(snapshot);
+  if (!storage) {
+    state.lastSaveAt = snapshot.savedAt;
+    state.saveStatus = "Browser local saving is unavailable, but server sync can still continue.";
+    return snapshot;
+  }
   try {
     storage.setItem(saveRecordKey(summary.id), JSON.stringify(snapshot));
     const index = [summary, ...getSaveSummaries().filter((item) => item.id !== summary.id)];
@@ -242,11 +282,13 @@ function persistCurrentGame() {
     state.lastSaveAt = snapshot.savedAt;
     state.availableSaveCount = index.length;
     state.saveStatus = `Autosaved locally at ${formatSaveTimestamp(snapshot.savedAt)}.`;
-    return true;
+    resumeState.hasSave = true;
+    if (!resumeState.latestFile) resumeState.latestFile = "Browser local save";
+    return snapshot;
   } catch (error) {
     console.error("Failed to save game snapshot.", error);
     state.saveStatus = "Autosave failed: browser storage is unavailable or full.";
-    return false;
+    return snapshot;
   }
 }
 
@@ -280,7 +322,7 @@ function readSavedSnapshot(saveId) {
   }
 }
 
-function hydrateGameSnapshot(snapshot) {
+function hydrateGameSnapshot(snapshot, options = {}) {
   const restored = deserializeSnapshot({
     snapshot,
     resources: RESOURCES,
@@ -319,7 +361,9 @@ function hydrateGameSnapshot(snapshot) {
   }
 
   state.availableSaveCount = getSaveSummaries().length;
-  state.saveStatus = `Loaded local save from ${formatSaveTimestamp(state.lastSaveAt)}.`;
+  if (options.skipSaveStatus !== true) {
+    state.saveStatus = `Loaded local save from ${formatSaveTimestamp(state.lastSaveAt)}.`;
+  }
   return true;
 }
 
@@ -328,35 +372,577 @@ function saveOptionLabel(summary) {
   return `${formatSaveTimestamp(summary.savedAt)} | ${players} | ${friendlySavePhase(summary)}`;
 }
 
-async function resumeSavedGame() {
-  const summaries = refreshSaveCatalogState();
-  if (summaries.length === 0) {
-    state.saveStatus = "No local saves available in this browser.";
-    render();
-    return;
-  }
+function resetLocalSaveSession() {
+  localSaveState.token += 1;
+  localSaveState.sessionId = "";
+  localSaveState.saveFile = "";
+  localSaveState.queue = [];
+  localSaveState.starting = false;
+  localSaveState.flushing = false;
+}
 
-  const picked = await showActionModal({
-    title: "Resume Game",
-    text: "Choose a locally saved game to resume.",
-    options: summaries.map((summary) => ({
-      label: saveOptionLabel(summary),
-      value: summary.id,
-    })),
-    allowCancel: true,
+async function startLocalSaveSession(options = {}) {
+  if (isOnlineGameStarted()) return false;
+  if (state.players.length === 0 || state.phase === "pregame") return false;
+  if (localSaveState.sessionId || localSaveState.starting) return localSaveState.sessionId.length > 0;
+
+  const token = localSaveState.token;
+  localSaveState.starting = true;
+  try {
+    const payload = await apiJson("/api/local-game/start", {
+      method: "POST",
+      body: JSON.stringify({
+        playerNames: state.players.map((player) => player.name),
+        turnSeconds: state.turnSeconds,
+        reason: normalizeActionLabel(options.reason || "local_game_start"),
+      }),
+    });
+    if (token !== localSaveState.token) return false;
+    localSaveState.sessionId = String(payload.sessionId || "");
+    localSaveState.saveFile = String(payload.save?.file || "");
+    if (localSaveState.saveFile) {
+      resumeState.hasSave = true;
+      resumeState.latestFile = localSaveState.saveFile;
+    }
+    return localSaveState.sessionId.length > 0;
+  } catch (_err) {
+    if (token !== localSaveState.token) return false;
+    return false;
+  } finally {
+    if (token === localSaveState.token) localSaveState.starting = false;
+    void flushLocalSaveQueue();
+  }
+}
+
+async function flushLocalSaveQueue() {
+  if (localSaveState.flushing) return;
+  if (!localSaveState.sessionId || localSaveState.queue.length === 0) return;
+
+  const token = localSaveState.token;
+  localSaveState.flushing = true;
+
+  try {
+    while (token === localSaveState.token && localSaveState.sessionId && localSaveState.queue.length > 0) {
+      const entry = localSaveState.queue[0];
+      try {
+        const payload = await apiJson("/api/local-game/state", {
+          method: "POST",
+          body: JSON.stringify({
+            sessionId: localSaveState.sessionId,
+            action: entry.action,
+            gameState: entry.snapshot,
+          }),
+        });
+        if (token !== localSaveState.token) return;
+        localSaveState.saveFile = String(payload.save?.file || localSaveState.saveFile);
+        localSaveState.queue.shift();
+      } catch (err) {
+        if (token !== localSaveState.token) return;
+        if (err instanceof Error && /not found/i.test(err.message)) {
+          localSaveState.sessionId = "";
+          if (!localSaveState.starting) void startLocalSaveSession({ reason: "local_session_recovered" });
+        }
+        break;
+      }
+    }
+  } finally {
+    if (token !== localSaveState.token) return;
+    localSaveState.flushing = false;
+    if (localSaveState.queue.length > 0) {
+      window.setTimeout(() => {
+        if (token !== localSaveState.token) return;
+        if (!localSaveState.sessionId && !localSaveState.starting) {
+          void startLocalSaveSession({ reason: "local_session_retry" });
+        }
+        void flushLocalSaveQueue();
+      }, 700);
+      return;
+    }
+    if (localSaveState.saveFile) {
+      resumeState.hasSave = true;
+      resumeState.latestFile = localSaveState.saveFile;
+    }
+  }
+}
+
+function queueLocalSaveSnapshot(action, snapshot) {
+  if (isOnlineGameStarted()) return;
+  if (state.players.length === 0 || state.phase === "pregame" || !snapshot) return;
+  localSaveState.queue.push({
+    action: normalizeActionLabel(action),
+    snapshot,
   });
-  if (!picked) return;
+  if (!localSaveState.sessionId && !localSaveState.starting) {
+    void startLocalSaveSession();
+    return;
+  }
+  void flushLocalSaveQueue();
+}
 
-  const snapshot = readSavedSnapshot(picked);
-  if (!snapshot || !hydrateGameSnapshot(snapshot)) {
-    deleteSavedGame(picked);
-    refreshSaveCatalogState();
-    state.saveStatus = "That saved game could not be loaded and was removed.";
+function recordGameAction(action, options = {}) {
+  const normalized = normalizeActionLabel(action);
+  const snapshot = persistCurrentGame(normalized);
+  if (!snapshot) return;
+  if (isOnlineGameStarted()) {
+    const force = options.force !== false;
+    publishOnlineState(snapshot, { force, action: normalized });
+    return;
+  }
+  queueLocalSaveSnapshot(normalized, snapshot);
+}
+
+async function fetchSavedGamesList() {
+  return apiJson("/api/game-saves", { method: "GET" });
+}
+
+async function fetchSavedGameById(saveId) {
+  const encoded = encodeURIComponent(String(saveId || ""));
+  return apiJson(`/api/game-saves/load?id=${encoded}`, { method: "GET" });
+}
+
+function playerNamesFromList(players) {
+  if (!Array.isArray(players) || players.length === 0) return [];
+  return players
+    .map((player, idx) => sanitizePlayerName(player?.name, `Player ${idx + 1}`))
+    .filter(Boolean);
+}
+
+function formatPlayersSummary(playerNames) {
+  if (!Array.isArray(playerNames) || playerNames.length === 0) return "Unknown players";
+  return playerNames.join(", ");
+}
+
+async function collectResumeOptions() {
+  const options = [];
+  let serverSaves = [];
+  try {
+    const payload = await fetchSavedGamesList();
+    serverSaves = Array.isArray(payload?.saves) ? payload.saves : [];
+  } catch (_err) {
+    serverSaves = [];
+  }
+
+  serverSaves.forEach((save) => {
+    const names = playerNamesFromList(save.players);
+    const label = `${formatSaveTimestamp(save.updatedAt || save.createdAt)} | ${formatPlayersSummary(names)}`;
+    options.push({
+      value: `server:${save.id}`,
+      label,
+      sourceLabel: String(save.file || save.id || "Saved game"),
+      sortAt: save.updatedAt || save.createdAt || "",
+    });
+  });
+
+  refreshSaveCatalogState().forEach((summary) => {
+    options.push({
+      value: `local:${summary.id}`,
+      label: saveOptionLabel(summary),
+      sourceLabel: "Browser local save",
+      sortAt: summary.savedAt,
+    });
+  });
+
+  options.sort((a, b) => {
+    const left = Date.parse(a.sortAt || "");
+    const right = Date.parse(b.sortAt || "");
+    return (Number.isFinite(right) ? right : 0) - (Number.isFinite(left) ? left : 0);
+  });
+  return options.map((option) => ({
+    value: option.value,
+    label: option.label,
+    sourceLabel: option.sourceLabel,
+  }));
+}
+
+async function refreshLatestSaveAvailability() {
+  if (resumeState.checking) return;
+  resumeState.checking = true;
+  try {
+    const options = await collectResumeOptions();
+    resumeState.hasSave = options.length > 0;
+    resumeState.latestFile = options.length > 0 ? options[0].sourceLabel : "";
+  } catch (_err) {
+    resumeState.hasSave = false;
+    resumeState.latestFile = "";
+  } finally {
+    resumeState.checking = false;
+    state.availableSaveCount = getSaveSummaries().length;
+    renderControls();
+  }
+}
+
+async function requestResumeGame() {
+  if (state.phase !== "pregame") return;
+  if (isOnlineRoomActive()) {
+    setStatus("Leave the room first to resume a saved game.");
     render();
     return;
   }
 
+  refs.resumeGameBtn.disabled = true;
+  try {
+    const resumeOptions = await collectResumeOptions();
+    if (resumeOptions.length === 0) {
+      throw new Error("No saved games found.");
+    }
+
+    const pickedValue = await showActionModal({
+      title: "Resume Saved Game",
+      text: "Select a game by date/time and players.",
+      options: resumeOptions.map((option) => ({
+        label: option.label,
+        value: option.value,
+      })),
+      allowCancel: true,
+    });
+    if (!pickedValue) {
+      render();
+      return;
+    }
+
+    const selected = resumeOptions.find((option) => option.value === pickedValue);
+    if (!selected) {
+      throw new Error("Invalid saved-game selection.");
+    }
+
+    let resumeSnapshot = null;
+    let sourceLabel = selected.sourceLabel;
+    if (selected.value.startsWith("local:")) {
+      const localId = selected.value.slice("local:".length);
+      resumeSnapshot = readSavedSnapshot(localId);
+      if (!resumeSnapshot) {
+        deleteSavedGame(localId);
+        refreshSaveCatalogState();
+        throw new Error("That browser save could not be loaded and was removed.");
+      }
+    } else if (selected.value.startsWith("server:")) {
+      const saveId = selected.value.slice("server:".length);
+      const payload = await fetchSavedGameById(saveId);
+      if (payload && payload.gameState && typeof payload.gameState === "object") {
+        resumeSnapshot = payload.gameState;
+        sourceLabel = String(payload.save?.file || sourceLabel);
+      }
+    }
+
+    if (!resumeSnapshot || !hydrateGameSnapshot(resumeSnapshot)) {
+      throw new Error("Could not load the selected saved game.");
+    }
+
+    resetLocalSaveSession();
+    if (sourceLabel) {
+      logEvent(`Resumed game from ${sourceLabel}.`);
+      setStatus(`Resumed game from ${sourceLabel}.`);
+    } else {
+      logEvent("Resumed saved game.");
+      setStatus("Resumed saved game.");
+    }
+    render();
+    recordGameAction("resume_game");
+    void refreshLatestSaveAvailability();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Failed to resume saved game.";
+    setStatus(message);
+    render();
+    window.alert(message);
+    void refreshLatestSaveAvailability();
+  }
+}
+
+function queueRoomCommand(type, payload = {}) {
+  pendingRoomCommand = { type, payload };
+  if (onlineState.socket && onlineState.socket.readyState === WebSocket.OPEN) {
+    const command = pendingRoomCommand;
+    pendingRoomCommand = null;
+    sendSocketMessage(command.type, command.payload);
+    return;
+  }
+  if (onlineState.socket && onlineState.socket.readyState === WebSocket.CONNECTING) return;
+
+  onlineState.socket = new WebSocket(socketEndpoint());
+  onlineState.socket.addEventListener("open", () => {
+    onlineState.connected = true;
+    if (pendingRoomCommand) {
+      const command = pendingRoomCommand;
+      pendingRoomCommand = null;
+      sendSocketMessage(command.type, command.payload);
+    }
+    renderRoomPanel();
+    renderControls();
+  });
+  onlineState.socket.addEventListener("message", (event) => {
+    handleSocketMessage(event.data);
+  });
+  onlineState.socket.addEventListener("close", () => {
+    onlineState.connected = false;
+    onlineState.socket = null;
+    pendingRoomCommand = null;
+    onlineState.roomCode = "";
+    onlineState.hostId = "";
+    onlineState.started = false;
+    onlineState.players = [];
+    onlineState.seatMap = [];
+    onlineState.version = 0;
+    onlineState.historyCount = 0;
+    onlineState.saveFile = "";
+    remoteSyncVersion = 0;
+    setRoomStatusOverride("Disconnected from server.");
+    renderRoomPanel();
+    renderControls();
+  });
+  onlineState.socket.addEventListener("error", () => {
+    setRoomStatusOverride("Socket error. Check server status.");
+    renderRoomPanel();
+  });
+}
+
+function handleSocketMessage(raw) {
+  let msg;
+  try {
+    msg = JSON.parse(raw);
+  } catch (_err) {
+    return;
+  }
+  if (!msg || typeof msg !== "object") return;
+
+  if (msg.type === "welcome") {
+    onlineState.clientId = String(msg.clientId ?? "");
+    renderRoomPanel();
+    return;
+  }
+
+  if (msg.type === "room_error") {
+    setRoomStatusOverride(String(msg.message || "Room error."));
+    renderRoomPanel();
+    return;
+  }
+
+  if (msg.type !== "room_state" || !msg.room || typeof msg.room !== "object") return;
+
+  const room = msg.room;
+  roomStatusOverride = "";
+  onlineState.roomCode = String(room.code || "");
+  onlineState.hostId = String(room.hostId || "");
+  onlineState.started = room.started === true;
+  onlineState.players = Array.isArray(room.players) ? room.players.slice() : [];
+  onlineState.seatMap = Array.isArray(room.seatMap) ? room.seatMap.slice() : [];
+  onlineState.version = Number(room.version) || 0;
+  onlineState.historyCount = Number(room.save?.historyCount) || 0;
+  onlineState.saveFile = String(room.save?.file || "");
+  if (onlineState.saveFile) {
+    resumeState.hasSave = true;
+    resumeState.latestFile = onlineState.saveFile;
+  }
+
+  if (onlineState.started && room.gameState && typeof room.version === "number" && room.version >= remoteSyncVersion) {
+    if (room.version > remoteSyncVersion || state.phase === "pregame") {
+      remoteSyncVersion = room.version;
+      if (hydrateGameSnapshot(room.gameState, { skipSaveStatus: true })) {
+        render();
+      }
+    }
+  } else if (!onlineState.started) {
+    remoteSyncVersion = 0;
+  }
+
+  renderRoomPanel();
+  renderControls();
+}
+
+function publishOnlineState(snapshot, options = {}) {
+  if (!isOnlineGameStarted()) return;
+  if (!onlineState.connected) return;
+  if (!options.force && !localControlsCurrentTurn()) return;
+  const action = typeof options.action === "string" && options.action.trim() ? options.action.trim() : "sync";
+  sendSocketMessage("state_sync", { gameState: snapshot, action });
+}
+
+function assertLocalTurnControl() {
+  if (!isOnlineGameStarted()) return true;
+  if (localControlsCurrentTurn()) return true;
+  setStatus(`It is ${currentTurnOwnerName()}'s turn.`);
   render();
+  return false;
+}
+
+function localDisplayName() {
+  if (refs.onlineName.value.trim()) return sanitizePlayerName(refs.onlineName.value, "Player");
+  const firstNameInput = refs.nameInputs.querySelector("input");
+  if (firstNameInput) return sanitizePlayerName(firstNameInput.value, "Player");
+  return "Player";
+}
+
+function requestCreateRoom() {
+  if (isOnlineRoomActive()) return;
+  if (state.phase !== "pregame") {
+    setRoomStatusOverride("Finish or restart the current game to use online rooms.");
+    renderRoomPanel();
+    return;
+  }
+  roomStatusOverride = "";
+  queueRoomCommand("create_room", { name: localDisplayName() });
+}
+
+function requestJoinRoom() {
+  if (isOnlineRoomActive()) return;
+  if (state.phase !== "pregame") {
+    setRoomStatusOverride("Finish or restart the current game to use online rooms.");
+    renderRoomPanel();
+    return;
+  }
+  const code = refs.roomCodeInput.value.trim().toUpperCase();
+  refs.roomCodeInput.value = code;
+  if (!ROOM_CODE_REGEX.test(code)) {
+    setRoomStatusOverride("Room codes are 4-6 letters/numbers.");
+    renderRoomPanel();
+    return;
+  }
+  roomStatusOverride = "";
+  queueRoomCommand("join_room", { code, name: localDisplayName() });
+}
+
+function requestLeaveRoom() {
+  if (!isOnlineRoomActive()) return;
+  sendSocketMessage("leave_room");
+  onlineState.roomCode = "";
+  onlineState.hostId = "";
+  onlineState.started = false;
+  onlineState.players = [];
+  onlineState.seatMap = [];
+  onlineState.version = 0;
+  onlineState.historyCount = 0;
+  onlineState.saveFile = "";
+  remoteSyncVersion = 0;
+  setRoomStatusOverride("Left room.");
+  renderRoomPanel();
+  renderControls();
+}
+
+function copyRoomCode() {
+  if (!isOnlineRoomActive()) return;
+  const code = onlineState.roomCode;
+  if (!navigator.clipboard || !navigator.clipboard.writeText) {
+    setRoomStatusOverride(`Room code: ${code}`);
+    renderRoomPanel();
+    return;
+  }
+  navigator.clipboard.writeText(code).then(
+    () => {
+      setRoomStatusOverride("Room code copied.");
+      renderRoomPanel();
+    },
+    () => {
+      setRoomStatusOverride(`Room code: ${code}`);
+      renderRoomPanel();
+    }
+  );
+}
+
+function requestRollbackAction() {
+  if (!isOnlineGameStarted()) {
+    setRoomStatusOverride("Start a room game before rolling back.");
+    renderRoomPanel();
+    return;
+  }
+  if (!isRoomHost()) {
+    setRoomStatusOverride("Only the host can roll back actions.");
+    renderRoomPanel();
+    return;
+  }
+  if (onlineState.historyCount < 2) {
+    setRoomStatusOverride("Need at least 2 saved actions before rollback.");
+    renderRoomPanel();
+    return;
+  }
+  const confirmed = window.confirm("Rollback to the previous saved action?");
+  if (!confirmed) return;
+  if (!sendSocketMessage("rollback_state")) {
+    setRoomStatusOverride("Could not send rollback request.");
+    renderRoomPanel();
+    return;
+  }
+  setRoomStatusOverride("Rollback requested...");
+  renderRoomPanel();
+}
+
+function renderRoomPanel() {
+  let statusText = "";
+  const inRoom = isOnlineRoomActive();
+  const gameInProgress = state.phase !== "pregame";
+  const lobbyLocked = !inRoom && gameInProgress;
+  const connectedNoRoom = onlineState.connected && !inRoom;
+  const showRollbackBtn = inRoom && onlineState.started;
+  refs.copyRoomCodeBtn.classList.toggle("hidden", !inRoom);
+  refs.leaveRoomBtn.classList.toggle("hidden", !inRoom);
+  refs.rollbackActionBtn.classList.toggle("hidden", !showRollbackBtn);
+  refs.roomCodeDisplay.classList.toggle("hidden", !inRoom);
+  refs.roomSaveMeta.classList.toggle("hidden", !showRollbackBtn);
+  refs.roomPlayersList.classList.toggle("hidden", !inRoom || onlineState.players.length === 0);
+  refs.roomCodeDisplay.textContent = inRoom ? `Code: ${onlineState.roomCode}` : "";
+
+  refs.onlineName.disabled = inRoom || lobbyLocked;
+  refs.roomCodeInput.disabled = inRoom || lobbyLocked;
+  refs.createRoomBtn.disabled = inRoom || lobbyLocked;
+  refs.joinRoomBtn.disabled = inRoom || lobbyLocked;
+  refs.rollbackActionBtn.disabled = !showRollbackBtn || !isRoomHost() || onlineState.historyCount < 2;
+
+  refs.playerCount.disabled = inRoom;
+  refs.nameInputs.querySelectorAll("input").forEach((input) => {
+    input.disabled = inRoom;
+  });
+  refs.turnSeconds.disabled = inRoom && !isRoomHost();
+
+  refs.roomPlayersList.innerHTML = "";
+  if (inRoom) {
+    onlineState.players.forEach((player, idx) => {
+      const li = document.createElement("li");
+      const mine = player.id === onlineState.clientId ? " (you)" : "";
+      const host = player.id === onlineState.hostId ? " [host]" : "";
+      const seat = onlineState.seatMap[idx] ? ` P${idx + 1}` : "";
+      const offline = player.connected === false ? " (offline)" : "";
+      li.textContent = `${player.name}${mine}${host}${seat}${offline}`;
+      if (player.id === onlineState.clientId) li.classList.add("current");
+      refs.roomPlayersList.appendChild(li);
+    });
+  }
+
+  if (showRollbackBtn) {
+    const fileLabel = onlineState.saveFile || "pending";
+    refs.roomSaveMeta.textContent = `Saved actions: ${onlineState.historyCount} | File: ${fileLabel}`;
+  } else {
+    refs.roomSaveMeta.textContent = "";
+  }
+
+  if (inRoom && !onlineState.started) {
+    if (isRoomHost()) {
+      if (onlineState.players.length < 3) {
+        statusText = "Host: waiting for at least 3 players.";
+      } else if (onlineState.players.length > ONLINE_MAX_PLAYERS) {
+        statusText = "Host: max 4 players.";
+      } else {
+        statusText = "Host: room ready. Start game when ready.";
+      }
+    } else {
+      statusText = "Waiting for host to start the game.";
+    }
+  } else if (inRoom && onlineState.started) {
+    const seat = localSeatIndex();
+    if (seat >= 0) {
+      statusText = `Connected as Player ${seat + 1}.`;
+    } else {
+      statusText = "Connected as spectator.";
+    }
+  } else if (lobbyLocked) {
+    statusText = "Online room setup is locked while a game is in progress.";
+  } else if (connectedNoRoom) {
+    statusText = "Connected. Create or join a room.";
+  } else if (!onlineState.connected) {
+    statusText = "Offline mode.";
+  }
+
+  if (roomStatusOverride) {
+    statusText = roomStatusOverride;
+  }
+  refs.roomStatusText.textContent = statusText || "Offline mode.";
 }
 
 function shuffle(arr) {
@@ -467,6 +1053,88 @@ function logEvent(msg) {
   if (state.log.length > 16) state.log.length = 16;
 }
 
+function sanitizePlayerName(raw, fallback = "Player") {
+  const value = String(raw ?? "").trim();
+  if (!value) return fallback;
+  return value.slice(0, 18);
+}
+
+function isOnlineRoomActive() {
+  return onlineState.roomCode.length > 0;
+}
+
+function isOnlineGameStarted() {
+  return isOnlineRoomActive() && onlineState.started;
+}
+
+function isRoomHost() {
+  return isOnlineRoomActive() && onlineState.clientId !== "" && onlineState.clientId === onlineState.hostId;
+}
+
+function localSeatIndex() {
+  if (!isOnlineRoomActive()) return -1;
+  return onlineState.seatMap.indexOf(onlineState.clientId);
+}
+
+function currentTurnOwnerDisconnected() {
+  if (!isOnlineGameStarted()) return false;
+  const ownerId = onlineState.seatMap[state.currentPlayer];
+  if (!ownerId) return false;
+  const owner = onlineState.players.find((player) => player.id === ownerId);
+  return Boolean(owner && owner.connected === false);
+}
+
+function localControlsCurrentTurn() {
+  if (!isOnlineGameStarted()) return true;
+  if (localSeatIndex() === state.currentPlayer) return true;
+  return isRoomHost() && currentTurnOwnerDisconnected();
+}
+
+function currentTurnOwnerName() {
+  if (state.currentPlayer < 0 || state.currentPlayer >= state.players.length) return "another player";
+  return state.players[state.currentPlayer].name;
+}
+
+function setRoomStatusOverride(msg) {
+  roomStatusOverride = String(msg || "");
+}
+
+function socketEndpoint() {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${window.location.host}`;
+}
+
+function sendSocketMessage(type, payload = {}) {
+  if (!onlineState.socket || onlineState.socket.readyState !== WebSocket.OPEN) return false;
+  onlineState.socket.send(JSON.stringify({ type, ...payload }));
+  return true;
+}
+
+function normalizeActionLabel(raw) {
+  const value = String(raw ?? "").trim();
+  if (!value) return "sync";
+  return value.slice(0, 48);
+}
+
+async function apiJson(path, options = {}) {
+  const init = { cache: "no-store", ...options };
+  if (init.body !== undefined) {
+    init.headers = { "Content-Type": "application/json", ...(init.headers || {}) };
+  }
+  const response = await fetch(path, init);
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch (_err) {
+    payload = null;
+  }
+  if (!response.ok) {
+    const message = typeof payload?.error === "string" ? payload.error : `Request failed (${response.status}).`;
+    throw new Error(message);
+  }
+  return payload || {};
+}
+
 function parsePositiveInt(raw) {
   const num = Number(raw);
   if (!Number.isInteger(num) || num < 1) return null;
@@ -488,6 +1156,12 @@ function shouldDisplayTurnClock() {
   if (state.turnSeconds < 1) return false;
   if (state.players.length === 0) return false;
   return state.phase === "setup" || state.phase === "main";
+}
+
+function canRunTurnTimeoutAutomation() {
+  if (state.phase !== "setup" && state.phase !== "main") return false;
+  if (!isOnlineGameStarted()) return true;
+  return localControlsCurrentTurn();
 }
 
 function renderTurnClock() {
@@ -544,7 +1218,7 @@ function restartTurnTimer(remainingOverrideMs = null) {
     renderTurnClock();
     if (state.turnTimerRemainingMs <= 0) {
       stopTurnTimer(false);
-      void handleTurnTimeout();
+      if (canRunTurnTimeoutAutomation()) void handleTurnTimeout();
     }
   }, 100);
 }
@@ -648,7 +1322,7 @@ function updateSetupCardVisibility() {
   const gameStarted = state.phase !== "pregame";
   refs.setupFields.classList.toggle("hidden", gameStarted);
   refs.startBtn.classList.toggle("hidden", gameStarted);
-  refs.resumeBtn.classList.toggle("hidden", gameStarted);
+  refs.resumeGameBtn.classList.toggle("hidden", gameStarted);
   refs.restartBtn.classList.toggle("hidden", !gameStarted);
 }
 
@@ -851,7 +1525,6 @@ function buildRoad(playerIdx, edgeIdx, options = {}) {
   player.roads.add(edgeIdx);
   logEvent(`${player.name} built a road.`);
   setStatus(`${player.name} built road on edge ${edgeIdx}.`);
-  persistCurrentGame();
   return true;
 }
 
@@ -878,7 +1551,6 @@ function buildSettlement(playerIdx, nodeIdx, options = {}) {
   logEvent(`${player.name} built a settlement.`);
   setStatus(`${player.name} built settlement on node ${nodeIdx}.`);
   checkVictory(playerIdx);
-  persistCurrentGame();
   return true;
 }
 
@@ -901,7 +1573,6 @@ function buildCity(playerIdx, nodeIdx) {
   logEvent(`${player.name} upgraded to a city.`);
   setStatus(`${player.name} upgraded node ${nodeIdx} to a city.`);
   checkVictory(playerIdx);
-  persistCurrentGame();
   return true;
 }
 
@@ -968,7 +1639,6 @@ async function chooseDiscardResource(player, toDiscard) {
     if (!picked) continue;
     player.hand[picked] -= 1;
     remaining -= 1;
-    persistCurrentGame();
     render();
   }
 }
@@ -1155,11 +1825,11 @@ function autoCompleteSetupTurn() {
   logEvent(`${playerName} timed out. Settlement + road auto-placed.`);
   setStatus(`${playerName} timed out. Setup auto-placed.`);
   advanceSetup();
-  persistCurrentGame();
   return true;
 }
 
 async function handleTurnTimeout() {
+  if (!canRunTurnTimeoutAutomation()) return;
   if (state.turnTimeoutBusy) return;
   state.turnTimeoutBusy = true;
   if (actionModalResolver) closeActionModal(null);
@@ -1171,6 +1841,7 @@ async function handleTurnTimeout() {
         restartTurnTimer();
       }
       render();
+      recordGameAction("turn_timeout");
       return;
     }
 
@@ -1200,6 +1871,7 @@ async function handleTurnTimeout() {
     } else {
       if (state.phase === "main" && !state.turnTimerActive) restartTurnTimer();
       render();
+      recordGameAction("turn_timeout");
     }
   } finally {
     state.turnTimeoutBusy = false;
@@ -1272,8 +1944,48 @@ function beginSetup(players) {
   restartTurnTimer();
 }
 
-function startGame() {
-  const playerCount = Number(refs.playerCount.value);
+function startGame(options = {}) {
+  const fromRoom = options.fromRoom === true;
+  const providedNames = Array.isArray(options.playerNames) ? options.playerNames : null;
+  const shouldSync = options.sync !== false;
+
+  if (isOnlineRoomActive() && !fromRoom) {
+    if (!isRoomHost()) {
+      setStatus("Only the room host can start.");
+      render();
+      return;
+    }
+    if (onlineState.players.length < 3 || onlineState.players.length > ONLINE_MAX_PLAYERS) {
+      setStatus("Online rooms require 3-4 players.");
+      render();
+      return;
+    }
+    state.turnSeconds = clampTurnSeconds(refs.turnSeconds.value);
+    refs.turnSeconds.value = String(state.turnSeconds);
+    onlineState.started = true;
+    onlineState.seatMap = onlineState.players.map((player) => player.id);
+    remoteSyncVersion = 0;
+    if (!sendSocketMessage("start_game", { turnSeconds: state.turnSeconds })) {
+      onlineState.started = false;
+      setStatus("Unable to start room game: socket is not connected.");
+      render();
+      return;
+    }
+    startGame({
+      fromRoom: true,
+      playerNames: onlineState.players.map((player) => player.name),
+      sync: true,
+    });
+    return;
+  }
+
+  const playerCount = providedNames ? providedNames.length : Number(refs.playerCount.value);
+  if (playerCount < 3 || playerCount > ONLINE_MAX_PLAYERS) {
+    setStatus("This prototype supports 3-4 players.");
+    render();
+    return;
+  }
+
   state.turnSeconds = clampTurnSeconds(refs.turnSeconds.value);
   refs.turnSeconds.value = String(state.turnSeconds);
   state.currentSaveId = makeSaveId();
@@ -1284,10 +1996,15 @@ function startGame() {
   state.histogramOpen = false;
   stopTurnTimer(true);
   const names = [];
-  const inputs = refs.nameInputs.querySelectorAll("input");
-  for (let i = 0; i < playerCount; i += 1) {
-    const name = (inputs[i]?.value || "").trim() || `Player ${i + 1}`;
-    names.push(name);
+  if (providedNames) {
+    for (let i = 0; i < playerCount; i += 1) {
+      names.push(sanitizePlayerName(providedNames[i], `Player ${i + 1}`));
+    }
+  } else {
+    const inputs = refs.nameInputs.querySelectorAll("input");
+    for (let i = 0; i < playerCount; i += 1) {
+      names.push(sanitizePlayerName(inputs[i]?.value, `Player ${i + 1}`));
+    }
   }
 
   state.players = names.map((name, idx) => ({
@@ -1304,12 +2021,21 @@ function startGame() {
   state.log = [];
   logEvent(`New game: ${names.join(", ")}.`);
   beginSetup(state.players);
-  persistCurrentGame();
+  resetLocalSaveSession();
+  if (!isOnlineGameStarted()) {
+    void startLocalSaveSession({ reason: "local_game_start" });
+  }
+  if (shouldSync || !isOnlineGameStarted()) recordGameAction("game_start");
   render();
 }
 
 function restartGame() {
   if (state.phase === "pregame") return;
+  if (isOnlineRoomActive() && !isRoomHost()) {
+    setStatus("Only the host can restart this room game.");
+    render();
+    return;
+  }
   const confirmed = window.confirm("Restart the current game? All progress will be lost.");
   if (!confirmed) return;
 
@@ -1325,7 +2051,15 @@ function restartGame() {
     });
   }
 
-  startGame();
+  if (isOnlineRoomActive()) {
+    startGame({
+      fromRoom: true,
+      playerNames: onlineState.players.map((player) => player.name),
+      sync: true,
+    });
+    return;
+  }
+  startGame({ sync: false });
 }
 
 function buildBoard() {
@@ -1499,6 +2233,7 @@ function appendResourceIcon(layer, tile) {
 }
 
 function isClickableNode(nodeIdx) {
+  if (isOnlineGameStarted() && !localControlsCurrentTurn()) return false;
   if (state.phase === "setup") {
     const setup = state.setup;
     if (!setup || setup.expecting !== "settlement") return false;
@@ -1512,6 +2247,7 @@ function isClickableNode(nodeIdx) {
 }
 
 function isClickableEdge(edgeIdx) {
+  if (isOnlineGameStarted() && !localControlsCurrentTurn()) return false;
   if (state.phase === "setup") {
     const setup = state.setup;
     if (!setup || setup.expecting !== "road" || setup.lastSettlementNode === null) return false;
@@ -1523,12 +2259,15 @@ function isClickableEdge(edgeIdx) {
 }
 
 function isClickableTile(tileIdx) {
+  if (isOnlineGameStarted() && !localControlsCurrentTurn()) return false;
   if (state.phase !== "main" || state.phase === "gameover") return false;
   if (!(state.pendingRobberMove || state.mode === "robber")) return false;
   return tileIdx !== state.robberTile;
 }
 
 function onNodeClick(nodeIdx) {
+  if (!assertLocalTurnControl()) return;
+
   if (state.phase === "setup") {
     const setup = state.setup;
     if (!setup || setup.expecting !== "settlement") return;
@@ -1542,7 +2281,6 @@ function onNodeClick(nodeIdx) {
     if (setup.selectedSettlementNode !== nodeIdx) {
       setup.selectedSettlementNode = nodeIdx;
       setStatus(`${currentPlayerObj().name}: settlement selected. Click again to confirm.`);
-      persistCurrentGame();
       render();
       return;
     }
@@ -1552,7 +2290,7 @@ function onNodeClick(nodeIdx) {
       setup.expecting = "road";
       setup.lastSettlementNode = nodeIdx;
       setStatus(`${currentPlayerObj().name}: place adjacent road.`);
-      persistCurrentGame();
+      recordGameAction("setup_settlement");
     }
     render();
     return;
@@ -1570,15 +2308,19 @@ function onNodeClick(nodeIdx) {
     return;
   }
 
+  let changed = false;
   if (state.mode === "settlement") {
-    buildSettlement(state.currentPlayer, nodeIdx);
+    changed = buildSettlement(state.currentPlayer, nodeIdx);
   } else if (state.mode === "city") {
-    buildCity(state.currentPlayer, nodeIdx);
+    changed = buildCity(state.currentPlayer, nodeIdx);
   }
   render();
+  if (changed) recordGameAction(state.mode === "city" ? "build_city" : "build_settlement");
 }
 
 function onEdgeClick(edgeIdx) {
+  if (!assertLocalTurnControl()) return;
+
   if (state.phase === "setup") {
     const setup = state.setup;
     if (!setup || setup.expecting !== "road" || setup.lastSettlementNode === null) return;
@@ -1589,7 +2331,7 @@ function onEdgeClick(edgeIdx) {
         logEvent(`${currentPlayerObj().name} gained starting resources.`);
       }
       advanceSetup();
-      persistCurrentGame();
+      recordGameAction("setup_road");
     }
     render();
     return;
@@ -1606,11 +2348,13 @@ function onEdgeClick(edgeIdx) {
     render();
     return;
   }
-  buildRoad(state.currentPlayer, edgeIdx);
+  const changed = buildRoad(state.currentPlayer, edgeIdx);
   render();
+  if (changed) recordGameAction("build_road");
 }
 
 async function onTileClick(tileIdx) {
+  if (!assertLocalTurnControl()) return;
   if (state.phase !== "main") return;
   if (!(state.pendingRobberMove || state.mode === "robber")) return;
   if (!(await moveRobber(state.currentPlayer, tileIdx))) {
@@ -1622,8 +2366,8 @@ async function onTileClick(tileIdx) {
     state.mode = "none";
     setStatus("Robber moved. Continue your turn.");
   }
-  persistCurrentGame();
   render();
+  recordGameAction("move_robber");
 }
 
 function renderPlaceholderBoard() {
@@ -1986,14 +2730,38 @@ function renderRollHistogram() {
 }
 
 function renderControls() {
+  renderRoomPanel();
+  const hideOnlineRoomCard = state.phase !== "pregame" && !isOnlineRoomActive();
+  refs.roomCard.classList.toggle("hidden", hideOnlineRoomCard);
   updateSetupCardVisibility();
-  refs.resumeBtn.disabled = state.availableSaveCount === 0;
-  refs.resumeBtn.textContent =
-    state.availableSaveCount > 0 ? `Resume Game (${state.availableSaveCount})` : "Resume Game";
-  refs.saveStatusText.textContent = state.saveStatus;
+  const canResumeGame = state.phase === "pregame" && !isOnlineRoomActive() && !resumeState.checking;
+  refs.resumeGameBtn.disabled = !canResumeGame;
+  if (resumeState.checking) {
+    refs.resumeGameBtn.title = "Checking for saved games...";
+  } else if (resumeState.latestFile) {
+    refs.resumeGameBtn.title = `Select from saved games (latest: ${resumeState.latestFile})`;
+  } else {
+    refs.resumeGameBtn.title = "Select a saved game to resume.";
+  }
+  if (isOnlineRoomActive()) {
+    refs.startBtn.textContent = "Start Room Game";
+    const roomReady =
+      isRoomHost() &&
+      !onlineState.started &&
+      onlineState.players.length >= 3 &&
+      onlineState.players.length <= ONLINE_MAX_PLAYERS;
+    refs.startBtn.disabled = !roomReady;
+    refs.restartBtn.disabled = !isRoomHost();
+  } else {
+    refs.startBtn.textContent = "Start New Game";
+    refs.startBtn.disabled = false;
+    refs.restartBtn.disabled = false;
+  }
+
   refreshPlayerTradeTargets();
   refs.phaseLabel.textContent = phaseLabel();
   const activePlayer = state.players.length > 0 ? currentPlayerObj() : null;
+  const controlsLockedToOtherPlayer = isOnlineGameStarted() && !localControlsCurrentTurn();
   refs.currentPlayerLabel.textContent =
     activePlayer ? `${activePlayer.name}${state.phase === "setup" ? " (setup)" : ""}` : "-";
   refs.diceLabel.textContent =
@@ -2016,13 +2784,15 @@ function renderControls() {
   refs.turnCallout.textContent = turnContextText(activePlayer);
 
   const inMainPhase = state.phase === "main" && state.phase !== "gameover";
-  const canRoll = inMainPhase && !state.hasRolled && !state.isRollingDice;
+  const canRoll = inMainPhase && !controlsLockedToOtherPlayer && !state.hasRolled && !state.isRollingDice;
   refs.rollBtn.disabled = !canRoll;
 
-  const canEndTurn = inMainPhase && state.hasRolled && !state.pendingRobberMove && !state.isRollingDice;
+  const canEndTurn =
+    inMainPhase && !controlsLockedToOtherPlayer && state.hasRolled && !state.pendingRobberMove && !state.isRollingDice;
   refs.endTurnBtn.disabled = !canEndTurn;
 
-  const canTakeActions = inMainPhase && state.hasRolled && !state.pendingRobberMove && !state.isRollingDice;
+  const canTakeActions =
+    inMainPhase && !controlsLockedToOtherPlayer && state.hasRolled && !state.pendingRobberMove && !state.isRollingDice;
   const canBankTrade = Boolean(activePlayer && canTakeActions && hasBankTradeOption(activePlayer));
   const canPlayerTrade = Boolean(
     activePlayer &&
@@ -2131,6 +2901,7 @@ function render() {
 
 async function rollDice(options = {}) {
   const auto = options.auto === true;
+  if (!auto && !assertLocalTurnControl()) return;
   if (state.phase !== "main" || state.hasRolled || state.isRollingDice) return;
   const roll = 1 + Math.floor(Math.random() * 6) + 1 + Math.floor(Math.random() * 6);
   const finalPair = dicePairForTotal(roll);
@@ -2180,11 +2951,12 @@ async function rollDice(options = {}) {
     distributeResources(roll);
     if (!auto) setStatus(`${currentPlayerObj().name}: choose actions, then end turn.`);
   }
-  persistCurrentGame();
   render();
+  recordGameAction("roll_dice");
 }
 
 function endTurn() {
+  if (!assertLocalTurnControl()) return;
   if (state.phase !== "main" || !state.hasRolled || state.pendingRobberMove || state.isRollingDice) return;
   state.currentPlayer = (state.currentPlayer + 1) % state.players.length;
   if (state.currentPlayer === 0) state.round += 1;
@@ -2198,11 +2970,12 @@ function endTurn() {
   setStatus(`${currentPlayerObj().name}: roll dice.`);
   logEvent(`Turn passed to ${currentPlayerObj().name}.`);
   restartTurnTimer();
-  persistCurrentGame();
   render();
+  recordGameAction("end_turn");
 }
 
 function bankTrade() {
+  if (!assertLocalTurnControl()) return;
   if (state.phase !== "main" || !state.hasRolled || state.pendingRobberMove || state.isRollingDice) return;
   const player = currentPlayerObj();
   const give = refs.tradeGive.value;
@@ -2223,11 +2996,12 @@ function bankTrade() {
   player.hand[get] += 1;
   logEvent(`${player.name} traded 4 ${give} for 1 ${get}.`);
   setStatus(`${player.name} traded with the bank.`);
-  persistCurrentGame();
   render();
+  recordGameAction("bank_trade");
 }
 
 function playerTrade() {
+  if (!assertLocalTurnControl()) return;
   if (state.phase !== "main" || !state.hasRolled || state.pendingRobberMove || state.isRollingDice) return;
   const fromIdx = state.currentPlayer;
   const toIdx = Number(refs.p2pTarget.value);
@@ -2289,8 +3063,8 @@ function playerTrade() {
   from.hand[getRes] += getAmt;
   logEvent(`${from.name} traded ${giveAmt} ${giveRes} for ${getAmt} ${getRes} with ${to.name}.`);
   setStatus("Trade completed.");
-  persistCurrentGame();
   render();
+  recordGameAction("player_trade");
 }
 
 function initTradeSelectors() {
@@ -2360,10 +3134,19 @@ function createNameInputs() {
 function bindEvents() {
   refs.playerCount.addEventListener("change", createNameInputs);
   refs.startBtn.addEventListener("click", startGame);
-  refs.resumeBtn.addEventListener("click", () => {
-    void resumeSavedGame();
-  });
+  refs.resumeGameBtn.addEventListener("click", requestResumeGame);
   refs.restartBtn.addEventListener("click", restartGame);
+  refs.createRoomBtn.addEventListener("click", requestCreateRoom);
+  refs.joinRoomBtn.addEventListener("click", requestJoinRoom);
+  refs.copyRoomCodeBtn.addEventListener("click", copyRoomCode);
+  refs.leaveRoomBtn.addEventListener("click", requestLeaveRoom);
+  refs.rollbackActionBtn.addEventListener("click", requestRollbackAction);
+  refs.roomCodeInput.addEventListener("input", () => {
+    refs.roomCodeInput.value = refs.roomCodeInput.value.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  });
+  refs.onlineName.addEventListener("change", () => {
+    refs.onlineName.value = sanitizePlayerName(refs.onlineName.value, "Player");
+  });
   refs.rollBtn.addEventListener("click", rollDice);
   refs.endTurnBtn.addEventListener("click", endTurn);
   refs.histogramToggleBtn.addEventListener("click", () => {
@@ -2417,6 +3200,7 @@ function init() {
   state.rollCountTotal = 0;
   state.histogramOpen = false;
   refreshSaveCatalogState();
+  void refreshLatestSaveAvailability();
   setBoardDiceFaces(1, 2);
   render();
 }

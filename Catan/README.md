@@ -4,15 +4,16 @@ This repo now includes a browser-based Catan experience with a real hex map and 
 
 ## Run (Graphical)
 
-From this folder, launch a local static server:
+Install dependencies and start the local Node server:
 
 ```bash
-python3 -m http.server 8000
+npm install
+npm start
 ```
 
 Then open:
 
-- `http://localhost:8000/index.html`
+- `http://localhost:8000`
 
 ## Testing
 
@@ -45,11 +46,16 @@ The unit tests focus on shared save and state helpers used by the browser app. F
 - 4:1 bank trade.
 - 10 VP win condition.
 - Player dashboard with VP, pieces, and hand counts.
+- Room-code online lobby with realtime room sync over WebSockets.
+- Host-controlled room start for 3-4 players.
+- Server-side save journaling to `game_saves/*.jsonl` for room games and local games.
+- Resume picker that combines browser saves with server-journaled saves.
+- Host rollback to the previous saved room action.
 
 ## Controls
 
 - `Start New Game` to deal a board.
-- `Resume Game` to load a locally saved game from this browser.
+- `Resume Game` to choose from browser saves or server-journaled saves.
 - `Roll Dice` and, when you can afford builds, use the build popup on the left side of the board:
 - `Road`
 - `Settlement`
@@ -57,7 +63,9 @@ The unit tests focus on shared save and state helpers used by the browser app. F
 - `Clear`
 - Click legal spots highlighted on the board.
 - `End Turn` to pass to the next player.
-- The game autosaves locally after meaningful state changes. Resume works in the same browser profile that created the save.
+- `Online Room` lets a host create a code and other players join before the room starts.
+- The host can use `Undo Last Action` during a room game to roll back to the previous saved state.
+- The game autosaves locally in the browser and also journals snapshots through the local server when available.
 
 ## Terminal Version
 
@@ -75,4 +83,4 @@ This is still a base prototype and does not yet include:
 - Longest Road / Largest Army points.
 - Harbor-specific trade rates.
 - Bank resource limits.
-- AI or online multiplayer.
+- Reconnect support if a player refreshes or disconnects mid-room.

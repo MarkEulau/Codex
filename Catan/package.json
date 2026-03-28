@@ -1,11 +1,15 @@
 {
   "name": "catan-browser-prototype",
   "private": true,
-  "description": "Browser-first Catan prototype with lightweight Node unit tests for save and state logic.",
+  "description": "Browser-first Catan prototype with lightweight Node unit tests, room-code multiplayer, and save/state journaling.",
   "scripts": {
+    "start": "node server.js",
     "test": "node --test",
     "test:unit": "node --test",
     "test:coverage": "node --experimental-test-coverage --test"
+  },
+  "dependencies": {
+    "ws": "^8.18.1"
   },
   "engines": {
     "node": ">=20"

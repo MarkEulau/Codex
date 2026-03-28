@@ -35,6 +35,9 @@ Use the browser app for flows that depend on the DOM or timing:
 - roll, build, trade, and end turn
 - refresh and resume during the main phase
 - confirm the intended save appears in the resume picker
+- create a room, join from additional browser tabs, and start a room game
+- verify only the active room player can take turn actions
+- trigger room rollback and confirm the prior saved state is restored
 
 ## Commands
 
