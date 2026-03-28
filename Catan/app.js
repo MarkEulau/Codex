@@ -196,7 +196,8 @@ const refs = {
   buildActionPopup: document.getElementById("buildActionPopup"),
   tradePromptPopup: document.getElementById("tradePromptPopup"),
   tradeActionPopup: document.getElementById("tradeActionPopup"),
-  openTradeMenuBtn: document.getElementById("openTradeMenuBtn"),
+  openBankTradeBtn: document.getElementById("openBankTradeBtn"),
+  openPlayerTradeBtn: document.getElementById("openPlayerTradeBtn"),
   closeTradeMenuBtn: document.getElementById("closeTradeMenuBtn"),
   bankTradeSection: document.getElementById("bankTradeSection"),
   bankTradeTitle: document.getElementById("bankTradeTitle"),
@@ -3662,7 +3663,10 @@ function renderControls() {
   refs.tradeActionPopup.classList.toggle("hidden", !showTradeMenu);
   refs.bankTradeSection.classList.toggle("hidden", !canBankTrade);
   refs.playerTradeSection.classList.toggle("hidden", !canPlayerTrade);
-  refs.openTradeMenuBtn.disabled = !hasTradeChoice;
+  refs.openBankTradeBtn.classList.toggle("hidden", !canBankTrade);
+  refs.openPlayerTradeBtn.classList.toggle("hidden", !canPlayerTrade);
+  refs.openBankTradeBtn.disabled = !canBankTrade;
+  refs.openPlayerTradeBtn.disabled = !canPlayerTrade;
   refs.closeTradeMenuBtn.disabled = !hasTradeChoice;
 
   refs.tradeBtn.disabled = !showTradeMenu || !canBankTrade;
@@ -4202,10 +4206,17 @@ function bindEvents() {
     state.histogramOpen = !state.histogramOpen;
     renderRollHistogram();
   });
-  refs.openTradeMenuBtn.addEventListener("click", () => {
+  refs.openBankTradeBtn.addEventListener("click", () => {
     if (refs.tradePromptPopup.classList.contains("hidden")) return;
     state.tradeMenuOpen = true;
     render();
+    refs.tradeGive.focus();
+  });
+  refs.openPlayerTradeBtn.addEventListener("click", () => {
+    if (refs.tradePromptPopup.classList.contains("hidden")) return;
+    state.tradeMenuOpen = true;
+    render();
+    refs.p2pTarget.focus();
   });
   refs.closeTradeMenuBtn.addEventListener("click", () => {
     state.tradeMenuOpen = false;

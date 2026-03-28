@@ -275,6 +275,11 @@ body::before {
   width: min(220px, 44vw);
 }
 
+.trade-prompt-buttons {
+  display: grid;
+  gap: 0.34rem;
+}
+
 .trade-prompt-popup button {
   width: 100%;
 }
