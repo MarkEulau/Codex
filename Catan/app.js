@@ -1,7 +1,7 @@
 "use strict";
 
 const RESOURCES = ["wood", "brick", "sheep", "wheat", "ore"];
-const RESOURCE_COUNTS = {
+const BASE_RESOURCE_COUNTS = {
   wood: 4,
   brick: 3,
   sheep: 4,
@@ -9,13 +9,52 @@ const RESOURCE_COUNTS = {
   ore: 3,
   desert: 1,
 };
-const NUMBER_TOKENS = [2, 3, 3, 4, 4, 5, 5, 6, 6, 8, 8, 9, 9, 10, 10, 11, 11, 12];
+const EXTENSION_RESOURCE_COUNTS = {
+  wood: 6,
+  brick: 5,
+  sheep: 6,
+  wheat: 6,
+  ore: 5,
+  desert: 2,
+};
+const BASE_NUMBER_TOKENS = [2, 3, 3, 4, 4, 5, 5, 6, 6, 8, 8, 9, 9, 10, 10, 11, 11, 12];
+const EXTENSION_NUMBER_TOKENS = [
+  2,
+  2,
+  3,
+  3,
+  3,
+  4,
+  4,
+  4,
+  5,
+  5,
+  5,
+  6,
+  6,
+  6,
+  8,
+  8,
+  8,
+  9,
+  9,
+  9,
+  10,
+  10,
+  10,
+  11,
+  11,
+  11,
+  12,
+  12,
+];
 const COST = {
   road: { wood: 1, brick: 1 },
   settlement: { wood: 1, brick: 1, sheep: 1, wheat: 1 },
   city: { wheat: 2, ore: 3 },
+  development: { sheep: 1, wheat: 1, ore: 1 },
 };
-const PLAYER_COLORS = ["#b93b2a", "#2b66be", "#d49419", "#2f8852"];
+const PLAYER_COLORS = ["#b93b2a", "#2b66be", "#d49419", "#2f8852", "#7a4d24", "#2e8d73"];
 const HIGH_PROBABILITY_NUMBERS = new Set([6, 8]);
 const DICE_SUMS = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
 const DEFAULT_TURN_SECONDS = 60;
@@ -31,6 +70,34 @@ const {
   buildSaveSummary,
   deserializeSnapshot,
 } = window.CatanSaveUtils;
+const {
+  ROAD_COST,
+  SETTLEMENT_COST,
+  CITY_COST,
+  DEVELOPMENT_CARD_COST,
+  DEFAULT_PIECE_LIMITS,
+  createBank,
+  createDevelopmentDeck,
+  normalizeDevelopmentState,
+  promoteBoughtDevelopmentCards,
+  countVictoryPointCards,
+  canAffordCost,
+  canBuildRoad: canBuildRoadByRule,
+  canBuildSettlement: canBuildSettlementByRule,
+  canBuildCity: canBuildCityByRule,
+  performBankTrade,
+  resolveHarborTradeRate,
+  applyBankPayout,
+  applyYearOfPlentyEffect,
+  applyMonopolyEffect,
+  buyDevelopmentCard,
+  canPlayDevelopmentCard,
+  spendDevelopmentCard,
+  applyRoadBuildingEffect,
+  recomputeLargestArmy,
+  recomputeLongestRoad,
+  computeVictoryPoints,
+} = window.CatanRules;
 const HEX_NEIGHBOR_DIRS = [
   [1, 0],
   [1, -1],
@@ -49,10 +116,14 @@ const DIE_FACE_ROTATIONS = {
 };
 
 const BOARD_RADIUS = 2;
+const EXTENSION_BOARD_ROWS = [3, 4, 5, 6, 5, 4, 3];
 const HEX_SIZE = 74;
 const BOARD_PADDING = 36;
 const SVG_NS = "http://www.w3.org/2000/svg";
-const ONLINE_MAX_PLAYERS = 4;
+const ONLINE_MAX_PLAYERS = 6;
+const PAIRED_PLAYER_OFFSET = 3;
+const ROOM_TOKEN_KEY_PREFIX = "catan:room-token:";
+const ROOM_RESUME_KEY_PREFIX = "catan:room-resume:";
 const ROOM_CODE_REGEX = /^[A-Z0-9]{4,6}$/;
 
 const state = {
@@ -62,12 +133,39 @@ const state = {
   edges: [],
   geometry: null,
   robberTile: -1,
+  bank: createBank(),
+  devDeck: [],
+  harbors: [],
+  awards: {
+    largestArmyHolder: null,
+    largestArmyCount: 0,
+    longestRoadHolder: null,
+    longestRoadLength: 0,
+  },
 
   phase: "pregame", // pregame | setup | main | gameover
   setup: null,
   currentPlayer: 0,
   round: 1,
   hasRolled: false,
+  mainStep: "before_roll", // before_roll | discard | move_robber | main_actions | dev_card_resolution
+  pairStep: "inactive",
+  pairPlayerIndex: null,
+  pairTurnIndex: null,
+  turnState: {
+    mainStep: "before_roll",
+    pairStep: "inactive",
+    pairPlayerIndex: null,
+    pairTurnIndex: null,
+  },
+  pairedTurn: {
+    enabled: false,
+    primaryPlayer: 0,
+    secondaryPlayer: null,
+    stage: "primary", // primary | secondary
+  },
+  pendingDevReturnStep: "main_actions",
+  pendingDevCardAction: "",
   diceResult: null,
   isRollingDice: false,
   rollingDiceValue: null,
@@ -83,6 +181,7 @@ const state = {
   pendingRobberMove: false,
   mode: "none", // none | road | settlement | city | robber
   tradeMenuOpen: false,
+  bankShortage: null,
   status: "Set players and start.",
   log: [],
   currentSaveId: null,
@@ -100,6 +199,7 @@ const refs = {
   openTradeMenuBtn: document.getElementById("openTradeMenuBtn"),
   closeTradeMenuBtn: document.getElementById("closeTradeMenuBtn"),
   bankTradeSection: document.getElementById("bankTradeSection"),
+  bankTradeTitle: document.getElementById("bankTradeTitle"),
   playerTradeSection: document.getElementById("playerTradeSection"),
   setupFields: document.getElementById("setupFields"),
   playerCount: document.getElementById("playerCount"),
@@ -166,11 +266,13 @@ let turnTimerInterval = null;
 let pendingRoomCommand = null;
 let remoteSyncVersion = 0;
 let roomStatusOverride = "";
+let roomReconnectTimer = null;
 
 const onlineState = {
   socket: null,
   connected: false,
   clientId: "",
+  selfId: "",
   roomCode: "",
   hostId: "",
   started: false,
@@ -179,6 +281,10 @@ const onlineState = {
   version: 0,
   historyCount: 0,
   saveFile: "",
+  reconnectToken: "",
+  reconnectAttempt: 0,
+  reconnecting: false,
+  expectedResume: false,
 };
 
 const localSaveState = {
@@ -206,6 +312,365 @@ function emptyRollHistogram() {
   const out = {};
   for (const sum of DICE_SUMS) out[sum] = 0;
   return out;
+}
+
+function activeResourceCounts(playerCount) {
+  return playerCount > 4 ? EXTENSION_RESOURCE_COUNTS : BASE_RESOURCE_COUNTS;
+}
+
+function activeNumberTokens(playerCount) {
+  return playerCount > 4 ? EXTENSION_NUMBER_TOKENS : BASE_NUMBER_TOKENS;
+}
+
+function isExtensionPlayerCount(playerCount) {
+  return Number(playerCount) > 4;
+}
+
+function pairedTurnEnabled(playerCount = state.players.length) {
+  return Number(playerCount) >= 5;
+}
+
+function pairedPartnerIndex(playerIdx, playerCount = state.players.length) {
+  if (!pairedTurnEnabled(playerCount)) return null;
+  return (playerIdx + PAIRED_PLAYER_OFFSET) % playerCount;
+}
+
+function createExtensionHexes() {
+  const coords = [];
+  const rowStarts = [1, 0, -1, -2, -2, -2, -2];
+  EXTENSION_BOARD_ROWS.forEach((count, rowIdx) => {
+    const r = rowIdx - 3;
+    const qStart = rowStarts[rowIdx];
+    for (let offset = 0; offset < count; offset += 1) {
+      coords.push({ q: qStart + offset, r });
+    }
+  });
+  return coords;
+}
+
+function createBoardCoords(playerCount) {
+  return isExtensionPlayerCount(playerCount) ? createExtensionHexes() : axialHexes(BOARD_RADIUS);
+}
+
+function harborTypesForPlayerCount(playerCount) {
+  if (isExtensionPlayerCount(playerCount)) {
+    return ["generic", "generic", "generic", "generic", "generic", "generic", ...RESOURCES];
+  }
+  return ["generic", "generic", "generic", "generic", ...RESOURCES];
+}
+
+function intersectNodeHexes(nodeA, nodeB) {
+  const hexes = new Set(nodeA.hexes);
+  return nodeB.hexes.filter((tileIdx) => hexes.has(tileIdx));
+}
+
+function coastalEdges() {
+  const centerX = state.tiles.reduce((sum, tile) => sum + tile.cx, 0) / Math.max(1, state.tiles.length);
+  const centerY = state.tiles.reduce((sum, tile) => sum + tile.cy, 0) / Math.max(1, state.tiles.length);
+  return state.edges
+    .map((edge) => {
+      const nodeA = state.nodes[edge.a];
+      const nodeB = state.nodes[edge.b];
+      const sharedHexes = intersectNodeHexes(nodeA, nodeB);
+      if (sharedHexes.length !== 1) return null;
+      const mx = (nodeA.x + nodeB.x) / 2;
+      const my = (nodeA.y + nodeB.y) / 2;
+      return {
+        edgeIdx: edge.idx,
+        nodes: [edge.a, edge.b],
+        mx,
+        my,
+        angle: Math.atan2(my - centerY, mx - centerX),
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => left.angle - right.angle);
+}
+
+function generateHarbors(playerCount) {
+  const coast = coastalEdges();
+  const harborTypes = shuffle(harborTypesForPlayerCount(playerCount));
+  if (coast.length === 0) return [];
+  const harbors = [];
+  const usedEdges = new Set();
+  const desiredCount = harborTypes.length;
+  const spacing = coast.length / desiredCount;
+  for (let idx = 0; idx < desiredCount; idx += 1) {
+    let pickIndex = Math.floor(idx * spacing);
+    while (usedEdges.has(coast[pickIndex % coast.length].edgeIdx)) pickIndex += 1;
+    const spot = coast[pickIndex % coast.length];
+    usedEdges.add(spot.edgeIdx);
+    harbors.push({
+      idx,
+      type: harborTypes[idx],
+      edgeIdx: spot.edgeIdx,
+      nodes: spot.nodes.slice(),
+      mx: spot.mx,
+      my: spot.my,
+      angle: spot.angle,
+    });
+  }
+  return harbors;
+}
+
+function createPlayerState(name, idx) {
+  return {
+    name,
+    color: PLAYER_COLORS[idx],
+    hand: resourceMap(0),
+    roads: new Set(),
+    settlements: new Set(),
+    cities: new Set(),
+    devCards: normalizeDevelopmentState(),
+    playedKnights: 0,
+  };
+}
+
+function initializeRuleState(playerCount) {
+  state.bank = createBank(playerCount);
+  state.devDeck = shuffle(createDevelopmentDeck(playerCount));
+  state.harbors = [];
+  state.awards = {
+    largestArmyHolder: null,
+    largestArmyCount: 0,
+    longestRoadHolder: null,
+    longestRoadLength: 0,
+  };
+  state.bankShortage = null;
+  state.mainStep = "before_roll";
+  state.pendingDevReturnStep = "main_actions";
+  state.pendingDevCardAction = "";
+  state.pairedTurn = {
+    enabled: pairedTurnEnabled(playerCount),
+    primaryPlayer: 0,
+    secondaryPlayer: pairedPartnerIndex(0, playerCount),
+    stage: "primary",
+  };
+  syncTurnStateMirror();
+}
+
+function recomputeAwards() {
+  const longestRoad = recomputeLongestRoad(state, state.awards.longestRoadHolder);
+  const largestArmy = recomputeLargestArmy(state.players, state.awards.largestArmyHolder);
+  state.awards.longestRoadHolder = longestRoad.holder;
+  state.awards.longestRoadLength = longestRoad.length;
+  state.awards.largestArmyHolder = largestArmy.holder;
+  state.awards.largestArmyCount = largestArmy.count;
+}
+
+function preparePlayerActionPhase(playerIdx, options = {}) {
+  const player = state.players[playerIdx];
+  if (!player) return;
+  player.devCards = promoteBoughtDevelopmentCards(player.devCards);
+  player.playedKnights = player.devCards.playedKnights;
+  if (options.beforeRoll) {
+    state.mainStep = "before_roll";
+    state.hasRolled = false;
+    state.diceResult = null;
+  } else {
+    state.mainStep = "main_actions";
+    state.hasRolled = true;
+  }
+  state.currentPlayer = playerIdx;
+  state.pendingRobberMove = false;
+  state.mode = "none";
+  state.tradeMenuOpen = false;
+  syncTurnStateMirror();
+}
+
+function roomTokenStorageKey(roomCode, playerId = "") {
+  return `${ROOM_TOKEN_KEY_PREFIX}${roomCode}:${playerId}`;
+}
+
+function roomResumeStorageKey(roomCode) {
+  return `${ROOM_RESUME_KEY_PREFIX}${roomCode}`;
+}
+
+function storeReconnectToken(roomCode, playerId, token) {
+  const storage = getLocalStorageHandle();
+  if (!storage || !roomCode || !playerId || !token) return;
+  storage.setItem(roomTokenStorageKey(roomCode, playerId), token);
+  storage.setItem(
+    roomResumeStorageKey(roomCode),
+    JSON.stringify({
+      roomCode,
+      playerId,
+      reconnectToken: token,
+      savedAt: new Date().toISOString(),
+    })
+  );
+}
+
+function readReconnectToken(roomCode, playerId) {
+  const storage = getLocalStorageHandle();
+  if (!storage || !roomCode || !playerId) return "";
+  return String(storage.getItem(roomTokenStorageKey(roomCode, playerId)) || "");
+}
+
+function readReconnectSession(roomCode) {
+  const storage = getLocalStorageHandle();
+  if (!storage || !roomCode) return null;
+  try {
+    const parsed = JSON.parse(storage.getItem(roomResumeStorageKey(roomCode)) || "null");
+    if (!parsed || typeof parsed !== "object") return null;
+    if (String(parsed.roomCode || "").toUpperCase() !== roomCode) return null;
+    const reconnectToken = String(parsed.reconnectToken || "").trim();
+    if (!reconnectToken) return null;
+    return {
+      roomCode,
+      playerId: String(parsed.playerId || "").trim(),
+      reconnectToken,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function clearReconnectSession(roomCode, playerId = "") {
+  const storage = getLocalStorageHandle();
+  if (!storage || !roomCode) return;
+  storage.removeItem(roomResumeStorageKey(roomCode));
+  if (playerId) storage.removeItem(roomTokenStorageKey(roomCode, playerId));
+}
+
+function clearReconnectTimer() {
+  if (roomReconnectTimer === null) return;
+  window.clearTimeout(roomReconnectTimer);
+  roomReconnectTimer = null;
+}
+
+function syncTurnStateMirror() {
+  const enabled = pairedTurnEnabled();
+  const pairStep = enabled && state.pairedTurn.stage === "secondary" ? "paired" : "inactive";
+  const pairPlayerIndex = enabled && state.pairedTurn.stage === "secondary" ? state.currentPlayer : null;
+  const pairTurnIndex = enabled ? state.pairedTurn.primaryPlayer : null;
+  state.pairStep = pairStep;
+  state.pairPlayerIndex = pairPlayerIndex;
+  state.pairTurnIndex = pairTurnIndex;
+  state.turnState = {
+    mainStep: state.mainStep,
+    pairStep,
+    pairPlayerIndex,
+    pairTurnIndex,
+  };
+}
+
+function restorePairedTurnState() {
+  const enabled = pairedTurnEnabled();
+  if (!enabled) {
+    state.pairedTurn.enabled = false;
+    state.pairedTurn.primaryPlayer = state.currentPlayer;
+    state.pairedTurn.secondaryPlayer = null;
+    state.pairedTurn.stage = "primary";
+    syncTurnStateMirror();
+    return;
+  }
+
+  const rawStep = String(state.pairStep || state.turnState?.pairStep || "primary").toLowerCase();
+  const stage = rawStep === "secondary" || rawStep === "paired" ? "secondary" : "primary";
+  const primaryPlayer = Number.isInteger(state.pairTurnIndex)
+    ? state.pairTurnIndex
+    : stage === "primary"
+    ? state.currentPlayer
+    : 0;
+  const secondaryPlayer =
+    stage === "secondary"
+      ? state.currentPlayer
+      : pairedPartnerIndex(primaryPlayer, state.players.length);
+
+  state.pairedTurn.enabled = true;
+  state.pairedTurn.primaryPlayer = primaryPlayer;
+  state.pairedTurn.secondaryPlayer = secondaryPlayer;
+  state.pairedTurn.stage = stage;
+  syncTurnStateMirror();
+}
+
+function resetOnlineRoomState(options = {}) {
+  const preserveRoom = options.preserveRoom === true;
+  const preserveSave = options.preserveSave === true;
+  const preserveConnection = options.preserveConnection === true;
+  clearReconnectTimer();
+  pendingRoomCommand = null;
+  if (!preserveConnection) {
+    onlineState.connected = false;
+    onlineState.socket = null;
+  }
+  onlineState.reconnecting = false;
+  onlineState.expectedResume = false;
+  onlineState.reconnectAttempt = 0;
+  if (!preserveRoom) {
+    onlineState.roomCode = "";
+    onlineState.hostId = "";
+    onlineState.started = false;
+    onlineState.players = [];
+    onlineState.seatMap = [];
+    onlineState.version = 0;
+    onlineState.historyCount = 0;
+    onlineState.reconnectToken = "";
+    onlineState.selfId = "";
+    if (!preserveSave) onlineState.saveFile = "";
+    remoteSyncVersion = 0;
+  }
+}
+
+function scheduleRoomReconnect() {
+  clearReconnectTimer();
+  if (!onlineState.started || !onlineState.roomCode || !onlineState.reconnectToken) return;
+  const delayMs = Math.min(5000, 500 + onlineState.reconnectAttempt * 800);
+  onlineState.reconnecting = true;
+  onlineState.expectedResume = true;
+  roomReconnectTimer = window.setTimeout(() => {
+    roomReconnectTimer = null;
+    onlineState.reconnectAttempt += 1;
+    queueRoomCommand("resume_room", {
+      code: onlineState.roomCode,
+      reconnectToken: onlineState.reconnectToken,
+    });
+    renderRoomPanel();
+    renderControls();
+  }, delayMs);
+}
+
+function canUseDomesticTrade() {
+  return !(pairedTurnEnabled() && state.pairedTurn.stage === "secondary");
+}
+
+function canRollDiceNow() {
+  return state.phase === "main" && state.mainStep === "before_roll" && !state.isRollingDice;
+}
+
+function canTakeMainActions() {
+  return state.phase === "main" && state.mainStep === "main_actions" && !state.pendingRobberMove && !state.isRollingDice;
+}
+
+function advancePairedTurn() {
+  if (!pairedTurnEnabled()) {
+    state.currentPlayer = (state.currentPlayer + 1) % state.players.length;
+    if (state.currentPlayer === 0) state.round += 1;
+    state.pairedTurn.primaryPlayer = state.currentPlayer;
+    state.pairedTurn.secondaryPlayer = null;
+    state.pairedTurn.stage = "primary";
+    preparePlayerActionPhase(state.currentPlayer, { beforeRoll: true });
+    syncTurnStateMirror();
+    return;
+  }
+
+  if (state.pairedTurn.stage === "primary") {
+    const secondary = pairedPartnerIndex(state.pairedTurn.primaryPlayer);
+    state.pairedTurn.secondaryPlayer = secondary;
+    state.pairedTurn.stage = "secondary";
+    preparePlayerActionPhase(secondary, { beforeRoll: false });
+    syncTurnStateMirror();
+    return;
+  }
+
+  const nextPrimary = (state.pairedTurn.primaryPlayer + 1) % state.players.length;
+  if (nextPrimary === 0) state.round += 1;
+  state.pairedTurn.primaryPlayer = nextPrimary;
+  state.pairedTurn.secondaryPlayer = pairedPartnerIndex(nextPrimary);
+  state.pairedTurn.stage = "primary";
+  preparePlayerActionPhase(nextPrimary, { beforeRoll: true });
+  syncTurnStateMirror();
 }
 
 function getLocalStorageHandle() {
@@ -257,6 +722,7 @@ function persistCurrentGame(action = "sync") {
   const storage = getLocalStorageHandle();
   if (!state.currentSaveId) state.currentSaveId = makeSaveId();
   if (!state.saveCreatedAt) state.saveCreatedAt = new Date().toISOString();
+  syncTurnStateMirror();
 
   const snapshot = buildSnapshotData({
     state,
@@ -308,7 +774,7 @@ function readSavedSnapshot(saveId) {
     const parsed = JSON.parse(storage.getItem(saveRecordKey(saveId)) || "null");
     if (
       !parsed ||
-      parsed.version !== SAVE_SCHEMA_VERSION ||
+      typeof parsed.version !== "number" ||
       !Array.isArray(parsed.players) ||
       !Array.isArray(parsed.tiles) ||
       !Array.isArray(parsed.nodes) ||
@@ -333,6 +799,7 @@ function hydrateGameSnapshot(snapshot, options = {}) {
   if (!restored) return false;
 
   Object.assign(state, restored);
+  restorePairedTurnState();
 
   refs.playerCount.value = String(state.players.length);
   createNameInputs();
@@ -661,6 +1128,7 @@ function queueRoomCommand(type, payload = {}) {
   onlineState.socket = new WebSocket(socketEndpoint());
   onlineState.socket.addEventListener("open", () => {
     onlineState.connected = true;
+    clearReconnectTimer();
     if (pendingRoomCommand) {
       const command = pendingRoomCommand;
       pendingRoomCommand = null;
@@ -673,19 +1141,19 @@ function queueRoomCommand(type, payload = {}) {
     handleSocketMessage(event.data);
   });
   onlineState.socket.addEventListener("close", () => {
+    const shouldReconnect = Boolean(onlineState.started && onlineState.roomCode && onlineState.reconnectToken);
     onlineState.connected = false;
     onlineState.socket = null;
     pendingRoomCommand = null;
-    onlineState.roomCode = "";
-    onlineState.hostId = "";
-    onlineState.started = false;
-    onlineState.players = [];
-    onlineState.seatMap = [];
-    onlineState.version = 0;
-    onlineState.historyCount = 0;
-    onlineState.saveFile = "";
-    remoteSyncVersion = 0;
-    setRoomStatusOverride("Disconnected from server.");
+    if (shouldReconnect) {
+      onlineState.reconnecting = true;
+      onlineState.expectedResume = true;
+      setRoomStatusOverride("Connection lost. Reconnecting to room...");
+      scheduleRoomReconnect();
+    } else {
+      resetOnlineRoomState();
+      setRoomStatusOverride("Disconnected from server.");
+    }
     renderRoomPanel();
     renderControls();
   });
@@ -711,8 +1179,22 @@ function handleSocketMessage(raw) {
   }
 
   if (msg.type === "room_error") {
+    if (onlineState.expectedResume) {
+      onlineState.reconnecting = false;
+      onlineState.expectedResume = false;
+      clearReconnectTimer();
+      if (/room not found/i.test(String(msg.message || ""))) {
+        clearReconnectSession(onlineState.roomCode, onlineState.selfId);
+        setStatus("Room no longer exists. Use Resume Game to load the latest saved state.");
+        resetOnlineRoomState({ preserveSave: true, preserveConnection: true });
+      } else if (/token/i.test(String(msg.message || ""))) {
+        clearReconnectSession(onlineState.roomCode, onlineState.selfId);
+        resetOnlineRoomState({ preserveSave: true, preserveConnection: true });
+      }
+    }
     setRoomStatusOverride(String(msg.message || "Room error."));
     renderRoomPanel();
+    renderControls();
     return;
   }
 
@@ -731,6 +1213,17 @@ function handleSocketMessage(raw) {
   if (onlineState.saveFile) {
     resumeState.hasSave = true;
     resumeState.latestFile = onlineState.saveFile;
+  }
+  onlineState.selfId = String(room.self?.id || onlineState.selfId || "");
+  onlineState.reconnectToken = String(room.self?.reconnectToken || onlineState.reconnectToken || "");
+  if (onlineState.roomCode && onlineState.selfId && onlineState.reconnectToken) {
+    storeReconnectToken(onlineState.roomCode, onlineState.selfId, onlineState.reconnectToken);
+  }
+  if (onlineState.started && room.self) {
+    onlineState.reconnecting = false;
+    onlineState.expectedResume = false;
+    onlineState.reconnectAttempt = 0;
+    clearReconnectTimer();
   }
 
   if (onlineState.started && room.gameState && typeof room.version === "number" && room.version >= remoteSyncVersion) {
@@ -797,21 +1290,30 @@ function requestJoinRoom() {
     return;
   }
   roomStatusOverride = "";
+  const reconnect = readReconnectSession(code);
+  if (reconnect?.reconnectToken) {
+    onlineState.roomCode = code;
+    onlineState.selfId = reconnect.playerId || "";
+    onlineState.reconnectToken = reconnect.reconnectToken;
+    onlineState.reconnecting = true;
+    onlineState.expectedResume = true;
+    setRoomStatusOverride("Attempting to resume your previous seat...");
+    queueRoomCommand("resume_room", { code, reconnectToken: reconnect.reconnectToken });
+    return;
+  }
   queueRoomCommand("join_room", { code, name: localDisplayName() });
 }
 
 function requestLeaveRoom() {
   if (!isOnlineRoomActive()) return;
+  clearReconnectSession(onlineState.roomCode, onlineState.selfId);
+  clearReconnectTimer();
+  onlineState.reconnectToken = "";
+  onlineState.selfId = "";
+  onlineState.reconnecting = false;
+  onlineState.expectedResume = false;
   sendSocketMessage("leave_room");
-  onlineState.roomCode = "";
-  onlineState.hostId = "";
-  onlineState.started = false;
-  onlineState.players = [];
-  onlineState.seatMap = [];
-  onlineState.version = 0;
-  onlineState.historyCount = 0;
-  onlineState.saveFile = "";
-  remoteSyncVersion = 0;
+  resetOnlineRoomState({ preserveConnection: true });
   setRoomStatusOverride("Left room.");
   renderRoomPanel();
   renderControls();
@@ -893,14 +1395,15 @@ function renderRoomPanel() {
 
   refs.roomPlayersList.innerHTML = "";
   if (inRoom) {
+    const selfId = onlineState.selfId || onlineState.clientId;
     onlineState.players.forEach((player, idx) => {
       const li = document.createElement("li");
-      const mine = player.id === onlineState.clientId ? " (you)" : "";
+      const mine = player.id === selfId ? " (you)" : "";
       const host = player.id === onlineState.hostId ? " [host]" : "";
       const seat = onlineState.seatMap[idx] ? ` P${idx + 1}` : "";
       const offline = player.connected === false ? " (offline)" : "";
       li.textContent = `${player.name}${mine}${host}${seat}${offline}`;
-      if (player.id === onlineState.clientId) li.classList.add("current");
+      if (player.id === selfId) li.classList.add("current");
       refs.roomPlayersList.appendChild(li);
     });
   }
@@ -917,7 +1420,7 @@ function renderRoomPanel() {
       if (onlineState.players.length < 3) {
         statusText = "Host: waiting for at least 3 players.";
       } else if (onlineState.players.length > ONLINE_MAX_PLAYERS) {
-        statusText = "Host: max 4 players.";
+        statusText = "Host: max 6 players.";
       } else {
         statusText = "Host: room ready. Start game when ready.";
       }
@@ -926,7 +1429,9 @@ function renderRoomPanel() {
     }
   } else if (inRoom && onlineState.started) {
     const seat = localSeatIndex();
-    if (seat >= 0) {
+    if (onlineState.reconnecting) {
+      statusText = `Reconnecting to room ${onlineState.roomCode}...`;
+    } else if (seat >= 0) {
       statusText = `Connected as Player ${seat + 1}.`;
     } else {
       statusText = "Connected as spectator.";
@@ -994,7 +1499,7 @@ function buildTileAdjacency(coords) {
   });
 }
 
-function assignNumbersWithConstraints(coords, resourcesByTile) {
+function assignNumbersWithConstraints(coords, resourcesByTile, numberPool = BASE_NUMBER_TOKENS) {
   const adjacency = buildTileAdjacency(coords);
   const nonDesertTiles = [];
   resourcesByTile.forEach((resource, idx) => {
@@ -1002,7 +1507,7 @@ function assignNumbersWithConstraints(coords, resourcesByTile) {
   });
 
   const baseCounts = {};
-  for (const number of NUMBER_TOKENS) {
+  for (const number of numberPool) {
     baseCounts[number] = (baseCounts[number] || 0) + 1;
   }
   const distinctNumbers = Object.keys(baseCounts).map(Number);
@@ -1068,12 +1573,14 @@ function isOnlineGameStarted() {
 }
 
 function isRoomHost() {
-  return isOnlineRoomActive() && onlineState.clientId !== "" && onlineState.clientId === onlineState.hostId;
+  const selfId = onlineState.selfId || onlineState.clientId;
+  return isOnlineRoomActive() && selfId !== "" && selfId === onlineState.hostId;
 }
 
 function localSeatIndex() {
   if (!isOnlineRoomActive()) return -1;
-  return onlineState.seatMap.indexOf(onlineState.clientId);
+  const selfId = onlineState.selfId || onlineState.clientId;
+  return onlineState.seatMap.indexOf(selfId);
 }
 
 function currentTurnOwnerDisconnected() {
@@ -1368,7 +1875,8 @@ function currentPlayerObj() {
 }
 
 function victoryPoints(player) {
-  return player.settlements.size + player.cities.size * 2;
+  const playerIdx = state.players.indexOf(player);
+  return computeVictoryPoints(player, state.awards, playerIdx, player?.devCards);
 }
 
 function resourceCount(player) {
@@ -1376,20 +1884,32 @@ function resourceCount(player) {
 }
 
 function canAfford(player, cost) {
-  return Object.entries(cost).every(([res, amt]) => player.hand[res] >= amt);
+  return canAffordCost(player.hand, cost, RESOURCES);
 }
 
 function hasAnyBuildByResources(player) {
-  return canAfford(player, COST.road) || canAfford(player, COST.settlement) || canAfford(player, COST.city);
+  const idx = state.players.indexOf(player);
+  return (
+    canBuildRoad(idx, -1, null, { skipEdgeCheck: true }).ok ||
+    canBuildSettlement(idx, -1, false, { skipNodeCheck: true }).ok ||
+    canBuildCity(idx, -1, { skipNodeCheck: true }).ok ||
+    (canAfford(player, COST.development) && state.devDeck.length > 0)
+  );
 }
 
 function hasBankTradeOption(player) {
-  return RESOURCES.some((res) => player.hand[res] >= 4);
+  const playerIdx = state.players.indexOf(player);
+  return RESOURCES.some((giveResource) => {
+    const rate = resolveHarborTradeRate(state, playerIdx, giveResource);
+    if (player.hand[giveResource] < rate) return false;
+    return RESOURCES.some((getResource) => getResource !== giveResource && state.bank[getResource] > 0);
+  });
 }
 
 function hasPlayerTradeOption(playerIdx) {
   const player = state.players[playerIdx];
   if (!player || resourceCount(player) === 0) return false;
+  if (pairedTurnEnabled() && state.pairedTurn.stage === "secondary") return false;
   for (let idx = 0; idx < state.players.length; idx += 1) {
     if (idx === playerIdx) continue;
     if (resourceCount(state.players[idx]) > 0) return true;
@@ -1406,9 +1926,16 @@ function turnContextText(player) {
   }
   if (state.phase === "gameover") return `${player.name} won the game.`;
   if (state.phase !== "main") return "Set players and start.";
-  if (!state.hasRolled) return `${player.name}: roll dice.`;
-  if (state.pendingRobberMove) return `${player.name}: move the robber.`;
-  return `${player.name}: choose build/trade actions, then end turn.`;
+  if (state.mainStep === "before_roll") return `${player.name}: play a dev card or roll dice.`;
+  if (state.mainStep === "discard") return `${player.name}: resolve discards.`;
+  if (state.mainStep === "move_robber") return `${player.name}: move the robber.`;
+  if (state.mainStep === "dev_card_resolution" && player.devCards.freeRoadPlacements > 0) {
+    return `${player.name}: place ${player.devCards.freeRoadPlacements} free road(s).`;
+  }
+  if (pairedTurnEnabled() && state.pairedTurn.stage === "secondary") {
+    return `${player.name}: paired action phase. Trade with the bank, build, or play 1 dev card.`;
+  }
+  return `${player.name}: trade, build, or end turn.`;
 }
 
 function turnBadgeText(player) {
@@ -1416,9 +1943,11 @@ function turnBadgeText(player) {
   if (state.phase === "setup") return `${player.name} | Setup`;
   if (state.phase === "gameover") return `${player.name} | Winner`;
   if (state.phase !== "main") return `${player.name} | Waiting`;
-  if (!state.hasRolled) return `${player.name} | Roll Dice`;
-  if (state.pendingRobberMove) return `${player.name} | Move Robber`;
-  return `${player.name} | Actions`;
+  const badgeRole = pairedTurnEnabled() ? (state.pairedTurn.stage === "primary" ? "P1" : "P2") : "TURN";
+  if (state.mainStep === "before_roll") return `${player.name} | ${badgeRole} Roll`;
+  if (state.mainStep === "move_robber") return `${player.name} | ${badgeRole} Robber`;
+  if (state.mainStep === "dev_card_resolution") return `${player.name} | ${badgeRole} Dev`;
+  return `${player.name} | ${badgeRole} Actions`;
 }
 
 function payCost(player, cost) {
@@ -1454,44 +1983,47 @@ function hasConnectedRoad(playerIdx, nodeIdx) {
   return false;
 }
 
-function canBuildRoad(playerIdx, edgeIdx, setupNode = null) {
-  if (edgeIdx < 0 || edgeIdx >= state.edges.length) return { ok: false, reason: "Invalid edge." };
-  const edge = state.edges[edgeIdx];
-  if (edge.owner !== null) return { ok: false, reason: "Road already exists there." };
-
-  if (setupNode !== null) {
-    if (edge.a === setupNode || edge.b === setupNode) return { ok: true };
-    return { ok: false, reason: "Setup road must touch your new settlement." };
+function canBuildRoad(playerIdx, edgeIdx, setupNode = null, options = {}) {
+  if (options.skipEdgeCheck === true) {
+    const player = state.players[playerIdx];
+    if (!player) return { ok: false, reason: "Invalid player." };
+    if (player.roads.size >= DEFAULT_PIECE_LIMITS.road) return { ok: false, reason: "No roads remain." };
+    if (player.devCards?.freeRoadPlacements > 0) return { ok: true };
+    if (!canAfford(player, COST.road)) return { ok: false, reason: "Not enough resources for road." };
+    return { ok: true };
   }
-
-  const endpoints = [edge.a, edge.b];
-  for (const nodeIdx of endpoints) {
-    const node = state.nodes[nodeIdx];
-    if (node.owner === playerIdx) return { ok: true };
-    for (const otherEdgeIdx of node.edges) {
-      if (state.edges[otherEdgeIdx].owner === playerIdx) return { ok: true };
-    }
-  }
-  return { ok: false, reason: "Road must connect to your road or building." };
+  return canBuildRoadByRule(state, playerIdx, edgeIdx, {
+    setupNode,
+    pieceLimits: DEFAULT_PIECE_LIMITS,
+  });
 }
 
-function canBuildSettlement(playerIdx, nodeIdx, setup = false) {
-  if (nodeIdx < 0 || nodeIdx >= state.nodes.length) return { ok: false, reason: "Invalid node." };
-  const node = state.nodes[nodeIdx];
-  if (node.owner !== null) return { ok: false, reason: "That corner is already occupied." };
-  if (!distanceRuleOk(nodeIdx)) return { ok: false, reason: "Distance rule violation." };
-  if (!setup && !hasConnectedRoad(playerIdx, nodeIdx)) {
-    return { ok: false, reason: "Settlement must connect to one of your roads." };
+function canBuildSettlement(playerIdx, nodeIdx, setup = false, options = {}) {
+  if (options.skipNodeCheck === true) {
+    const player = state.players[playerIdx];
+    if (!player) return { ok: false, reason: "Invalid player." };
+    if (player.settlements.size >= DEFAULT_PIECE_LIMITS.settlement) return { ok: false, reason: "No settlements remain." };
+    if (!canAfford(player, COST.settlement)) return { ok: false, reason: "Not enough resources for settlement." };
+    return { ok: true };
   }
-  return { ok: true };
+  return canBuildSettlementByRule(state, playerIdx, nodeIdx, {
+    setup,
+    pieceLimits: DEFAULT_PIECE_LIMITS,
+  });
 }
 
-function canBuildCity(playerIdx, nodeIdx) {
-  if (nodeIdx < 0 || nodeIdx >= state.nodes.length) return { ok: false, reason: "Invalid node." };
-  const node = state.nodes[nodeIdx];
-  if (node.owner !== playerIdx) return { ok: false, reason: "You do not own this settlement." };
-  if (node.isCity) return { ok: false, reason: "That is already a city." };
-  return { ok: true };
+function canBuildCity(playerIdx, nodeIdx, options = {}) {
+  if (options.skipNodeCheck === true) {
+    const player = state.players[playerIdx];
+    if (!player) return { ok: false, reason: "Invalid player." };
+    if (player.cities.size >= DEFAULT_PIECE_LIMITS.city) return { ok: false, reason: "No cities remain." };
+    if (!canAfford(player, COST.city)) return { ok: false, reason: "Not enough resources for city." };
+    if (player.settlements.size === 0) return { ok: false, reason: "Need a settlement to upgrade." };
+    return { ok: true };
+  }
+  return canBuildCityByRule(state, playerIdx, nodeIdx, {
+    pieceLimits: DEFAULT_PIECE_LIMITS,
+  });
 }
 
 function checkVictory(playerIdx) {
@@ -1515,16 +2047,26 @@ function buildRoad(playerIdx, edgeIdx, options = {}) {
   }
   const player = state.players[playerIdx];
   if (!free) {
-    if (!canAfford(player, COST.road)) {
-      setStatus("Not enough resources for road.");
-      return false;
+    if (player.devCards.freeRoadPlacements > 0) {
+      player.devCards.freeRoadPlacements = Math.max(0, player.devCards.freeRoadPlacements - 1);
+    } else {
+      if (!canAfford(player, COST.road)) {
+        setStatus("Not enough resources for road.");
+        return false;
+      }
+      payCost(player, COST.road);
+      state.bank = applyResourceDelta(state.bank, COST.road, RESOURCES);
     }
-    payCost(player, COST.road);
   }
   state.edges[edgeIdx].owner = playerIdx;
   player.roads.add(edgeIdx);
+  state.bankShortage = null;
+  recomputeAwards();
   logEvent(`${player.name} built a road.`);
   setStatus(`${player.name} built road on edge ${edgeIdx}.`);
+  if (state.mainStep === "dev_card_resolution" && player.devCards.freeRoadPlacements <= 0) {
+    state.mainStep = state.pendingDevReturnStep || "main_actions";
+  }
   return true;
 }
 
@@ -1543,11 +2085,14 @@ function buildSettlement(playerIdx, nodeIdx, options = {}) {
       return false;
     }
     payCost(player, COST.settlement);
+    state.bank = applyResourceDelta(state.bank, COST.settlement, RESOURCES);
   }
   const node = state.nodes[nodeIdx];
   node.owner = playerIdx;
   node.isCity = false;
   player.settlements.add(nodeIdx);
+  state.bankShortage = null;
+  recomputeAwards();
   logEvent(`${player.name} built a settlement.`);
   setStatus(`${player.name} built settlement on node ${nodeIdx}.`);
   checkVictory(playerIdx);
@@ -1566,10 +2111,13 @@ function buildCity(playerIdx, nodeIdx) {
     return false;
   }
   payCost(player, COST.city);
+  state.bank = applyResourceDelta(state.bank, COST.city, RESOURCES);
   const node = state.nodes[nodeIdx];
   node.isCity = true;
   player.settlements.delete(nodeIdx);
   player.cities.add(nodeIdx);
+  state.bankShortage = null;
+  recomputeAwards();
   logEvent(`${player.name} upgraded to a city.`);
   setStatus(`${player.name} upgraded node ${nodeIdx} to a city.`);
   checkVictory(playerIdx);
@@ -1583,11 +2131,15 @@ function gainStartingResources(playerIdx, nodeIdx) {
     const tile = state.tiles[tileIdx];
     if (tile.resource !== "desert") gains[tile.resource] += 1;
   }
-  addResources(player, gains);
+  const payout = applyBankPayout(state.bank, gains, RESOURCES);
+  state.bank = payout.bank;
+  addResources(player, payout.granted);
+  state.bankShortage = payout.shortage;
 }
 
 function distributeResources(roll) {
   const gains = state.players.map(() => resourceMap(0));
+  const shortageTotals = resourceMap(0);
 
   for (const tile of state.tiles) {
     if (tile.resource === "desert") continue;
@@ -1601,7 +2153,16 @@ function distributeResources(roll) {
     }
   }
 
-  for (let i = 0; i < state.players.length; i += 1) addResources(state.players[i], gains[i]);
+  const shortages = [];
+  for (let i = 0; i < state.players.length; i += 1) {
+    const payout = applyBankPayout(state.bank, gains[i], RESOURCES);
+    state.bank = payout.bank;
+    addResources(state.players[i], payout.granted);
+    for (const resource of RESOURCES) shortageTotals[resource] += payout.shortage[resource];
+    const totalShortage = RESOURCES.reduce((sum, resource) => sum + payout.shortage[resource], 0);
+    if (totalShortage > 0) shortages.push(`${state.players[i].name}: short ${totalShortage}`);
+  }
+  state.bankShortage = RESOURCES.some((resource) => shortageTotals[resource] > 0) ? shortageTotals : null;
 
   const summary = state.players
     .map((p, idx) => {
@@ -1612,7 +2173,11 @@ function distributeResources(roll) {
 
   if (summary.length > 0) {
     logEvent(`Production on ${roll}: ${summary.join(" | ")}`);
-    setStatus(`Resources distributed for roll ${roll}.`);
+    setStatus(
+      shortages.length > 0
+        ? `Resources distributed for roll ${roll}. Bank shortages: ${shortages.join(" | ")}.`
+        : `Resources distributed for roll ${roll}.`
+    );
   } else {
     logEvent(`Production on ${roll}: no resources generated.`);
     setStatus(`No resources generated on roll ${roll}.`);
@@ -1638,6 +2203,7 @@ async function chooseDiscardResource(player, toDiscard) {
     });
     if (!picked) continue;
     player.hand[picked] -= 1;
+    state.bank[picked] += 1;
     remaining -= 1;
     render();
   }
@@ -1648,10 +2214,12 @@ async function handleRollSeven() {
     const total = resourceCount(player);
     if (total <= 7) continue;
     const toDiscard = Math.floor(total / 2);
+    state.mainStep = "discard";
     await chooseDiscardResource(player, toDiscard);
     logEvent(`${player.name} discarded ${toDiscard} card(s).`);
   }
   state.pendingRobberMove = true;
+  state.mainStep = "move_robber";
   state.mode = "robber";
   setStatus("Rolled 7: click a tile to move the robber.");
 }
@@ -1662,6 +2230,7 @@ function discardRandomResources(player, amount) {
     const picked = randomChoice(options);
     if (!picked) break;
     player.hand[picked] -= 1;
+    state.bank[picked] += 1;
   }
 }
 
@@ -1699,6 +2268,7 @@ function handleRollSevenAuto(rollerIdx) {
 
   autoMoveRobberForPlayer(rollerIdx);
   state.pendingRobberMove = false;
+  state.mainStep = "main_actions";
   state.mode = "none";
   setStatus("Rolled 7: robber resolved automatically.");
 }
@@ -1751,6 +2321,7 @@ async function moveRobber(playerIdx, tileIdx) {
   if (victimList.length === 0) {
     logEvent(`${state.players[playerIdx].name} moved the robber (no victim).`);
     setStatus("Robber moved. No available player to steal from.");
+    state.mainStep = state.pendingDevReturnStep || "main_actions";
     return true;
   }
 
@@ -1762,6 +2333,7 @@ async function moveRobber(playerIdx, tileIdx) {
   } else {
     setStatus("Victim had no resources to steal.");
   }
+  state.mainStep = state.pendingDevReturnStep || "main_actions";
   return true;
 }
 
@@ -1853,19 +2425,24 @@ async function handleTurnTimeout() {
       if (state.phase !== "main" || state.phase === "gameover") return;
     }
 
-    if (!state.hasRolled) {
+    if (state.mainStep === "before_roll") {
       logEvent(`${timedOutPlayerName} timed out. Auto-rolling.`);
       await rollDice({ auto: true });
     } else if (state.pendingRobberMove) {
       autoMoveRobberForPlayer(state.currentPlayer);
       state.pendingRobberMove = false;
+      state.mainStep = "main_actions";
       state.mode = "none";
       logEvent(`${timedOutPlayerName} timed out. Robber resolved automatically.`);
+    } else if (state.mainStep === "dev_card_resolution" && currentPlayerObj().devCards.freeRoadPlacements > 0) {
+      currentPlayerObj().devCards.freeRoadPlacements = 0;
+      state.mainStep = state.pendingDevReturnStep || "main_actions";
+      logEvent(`${timedOutPlayerName} timed out. Remaining free roads were forfeited.`);
     } else {
       logEvent(`${timedOutPlayerName} timed out.`);
     }
 
-    if (state.phase === "main" && !state.pendingRobberMove && !state.isRollingDice) {
+    if (state.phase === "main" && !state.pendingRobberMove && !state.isRollingDice && state.mainStep === "main_actions") {
       setStatus(`${timedOutPlayerName} timed out. Turn passed.`);
       endTurn();
     } else {
@@ -1882,6 +2459,7 @@ function startMainPhase() {
   state.phase = "main";
   state.currentPlayer = 0;
   state.hasRolled = false;
+  state.mainStep = "before_roll";
   state.isRollingDice = false;
   state.rollingDiceValue = null;
   state.rollResultPopupValue = null;
@@ -1894,6 +2472,12 @@ function startMainPhase() {
   state.mode = "none";
   state.tradeMenuOpen = false;
   state.setup = null;
+  state.pairedTurn.enabled = pairedTurnEnabled();
+  state.pairedTurn.primaryPlayer = 0;
+  state.pairedTurn.secondaryPlayer = pairedPartnerIndex(0);
+  state.pairedTurn.stage = "primary";
+  preparePlayerActionPhase(0, { beforeRoll: true });
+  syncTurnStateMirror();
   setStatus(`${currentPlayerObj().name}'s turn. Roll dice.`);
   logEvent("Setup complete. Main game begins.");
   restartTurnTimer();
@@ -1937,8 +2521,10 @@ function beginSetup(players) {
   state.turnTimerRemainingMs = state.turnSeconds * 1000;
   state.pendingRobberMove = false;
   state.diceResult = null;
+  state.mainStep = "before_roll";
   state.mode = "none";
   state.tradeMenuOpen = false;
+  syncTurnStateMirror();
   setStatus(`${currentPlayerObj().name}: select settlement, then click again to confirm.`);
   logEvent("Setup started.");
   restartTurnTimer();
@@ -1956,7 +2542,7 @@ function startGame(options = {}) {
       return;
     }
     if (onlineState.players.length < 3 || onlineState.players.length > ONLINE_MAX_PLAYERS) {
-      setStatus("Online rooms require 3-4 players.");
+      setStatus("Online rooms require 3-6 players.");
       render();
       return;
     }
@@ -1981,7 +2567,7 @@ function startGame(options = {}) {
 
   const playerCount = providedNames ? providedNames.length : Number(refs.playerCount.value);
   if (playerCount < 3 || playerCount > ONLINE_MAX_PLAYERS) {
-    setStatus("This prototype supports 3-4 players.");
+    setStatus("This prototype supports 3-6 players.");
     render();
     return;
   }
@@ -2007,19 +2593,14 @@ function startGame(options = {}) {
     }
   }
 
-  state.players = names.map((name, idx) => ({
-    name,
-    color: PLAYER_COLORS[idx],
-    hand: resourceMap(0),
-    roads: new Set(),
-    settlements: new Set(),
-    cities: new Set(),
-  }));
+  state.players = names.map((name, idx) => createPlayerState(name, idx));
   state.tradeMenuOpen = false;
+  initializeRuleState(playerCount);
 
   buildBoard();
   state.log = [];
   logEvent(`New game: ${names.join(", ")}.`);
+  if (pairedTurnEnabled(playerCount)) logEvent("5-6 player extension enabled: paired turns are active.");
   beginSetup(state.players);
   resetLocalSaveSession();
   if (!isOnlineGameStarted()) {
@@ -2042,7 +2623,7 @@ function restartGame() {
   if (actionModalResolver) closeActionModal(null);
 
   const existingNames = state.players.map((player) => player.name);
-  if (existingNames.length >= 3 && existingNames.length <= 4) {
+  if (existingNames.length >= 3 && existingNames.length <= ONLINE_MAX_PLAYERS) {
     refs.playerCount.value = String(existingNames.length);
     createNameInputs();
     const inputs = refs.nameInputs.querySelectorAll("input");
@@ -2063,14 +2644,14 @@ function restartGame() {
 }
 
 function buildBoard() {
-  const coords = shuffle(axialHexes(BOARD_RADIUS));
+  const coords = shuffle(createBoardCoords(state.players.length));
 
   const resources = [];
-  for (const [res, count] of Object.entries(RESOURCE_COUNTS)) {
+  for (const [res, count] of Object.entries(activeResourceCounts(state.players.length))) {
     for (let i = 0; i < count; i += 1) resources.push(res);
   }
   const shuffledResources = shuffle(resources);
-  const numbersByTile = assignNumbersWithConstraints(coords, shuffledResources);
+  const numbersByTile = assignNumbersWithConstraints(coords, shuffledResources, activeNumberTokens(state.players.length));
 
   state.tiles = [];
   state.nodes = [];
@@ -2152,6 +2733,8 @@ function buildBoard() {
     width: maxX - minX + BOARD_PADDING * 2,
     height: maxY - minY + BOARD_PADDING * 2,
   };
+  state.harbors = generateHarbors(state.players.length);
+  recomputeAwards();
 }
 
 function sx(x) {
@@ -2232,6 +2815,12 @@ function appendResourceIcon(layer, tile) {
   layer.appendChild(g);
 }
 
+function harborLabel(harbor) {
+  if (!harbor) return "";
+  if (harbor.type === "generic") return "3:1";
+  return `${harbor.type[0].toUpperCase() + harbor.type.slice(1)} 2:1`;
+}
+
 function isClickableNode(nodeIdx) {
   if (isOnlineGameStarted() && !localControlsCurrentTurn()) return false;
   if (state.phase === "setup") {
@@ -2240,7 +2829,7 @@ function isClickableNode(nodeIdx) {
     return canBuildSettlement(state.currentPlayer, nodeIdx, true).ok;
   }
   if (state.phase !== "main" || state.phase === "gameover") return false;
-  if (!state.hasRolled || state.pendingRobberMove) return false;
+  if (state.mainStep !== "main_actions" || state.pendingRobberMove) return false;
   if (state.mode === "settlement") return canBuildSettlement(state.currentPlayer, nodeIdx, false).ok;
   if (state.mode === "city") return canBuildCity(state.currentPlayer, nodeIdx).ok;
   return false;
@@ -2254,14 +2843,18 @@ function isClickableEdge(edgeIdx) {
     return canBuildRoad(state.currentPlayer, edgeIdx, setup.lastSettlementNode).ok;
   }
   if (state.phase !== "main" || state.phase === "gameover") return false;
-  if (!state.hasRolled || state.pendingRobberMove || state.mode !== "road") return false;
+  if (state.pendingRobberMove) return false;
+  if (state.mode !== "road") return false;
+  if (state.mainStep !== "main_actions" && !(state.mainStep === "dev_card_resolution" && currentPlayerObj().devCards.freeRoadPlacements > 0)) {
+    return false;
+  }
   return canBuildRoad(state.currentPlayer, edgeIdx).ok;
 }
 
 function isClickableTile(tileIdx) {
   if (isOnlineGameStarted() && !localControlsCurrentTurn()) return false;
   if (state.phase !== "main" || state.phase === "gameover") return false;
-  if (!(state.pendingRobberMove || state.mode === "robber")) return false;
+  if (!(state.pendingRobberMove || state.mainStep === "move_robber" || state.mode === "robber")) return false;
   return tileIdx !== state.robberTile;
 }
 
@@ -2297,8 +2890,8 @@ function onNodeClick(nodeIdx) {
   }
 
   if (state.phase !== "main") return;
-  if (!state.hasRolled) {
-    setStatus("Roll dice first.");
+  if (state.mainStep === "before_roll") {
+    setStatus("Roll dice or play a dev card first.");
     render();
     return;
   }
@@ -2338,8 +2931,8 @@ function onEdgeClick(edgeIdx) {
   }
 
   if (state.phase !== "main" || state.mode !== "road") return;
-  if (!state.hasRolled) {
-    setStatus("Roll dice first.");
+  if (state.mainStep === "before_roll") {
+    setStatus("Roll dice or play a dev card first.");
     render();
     return;
   }
@@ -2350,7 +2943,16 @@ function onEdgeClick(edgeIdx) {
   }
   const changed = buildRoad(state.currentPlayer, edgeIdx);
   render();
-  if (changed) recordGameAction("build_road");
+  if (changed) {
+    if (state.pendingDevCardAction === "road_building" && currentPlayerObj().devCards.freeRoadPlacements <= 0) {
+      state.pendingDevCardAction = "";
+      logEvent(`${currentPlayerObj().name} played Road Building.`);
+      checkVictory(state.currentPlayer);
+      recordGameAction("play_road_building");
+      return;
+    }
+    recordGameAction("build_road");
+  }
 }
 
 async function onTileClick(tileIdx) {
@@ -2367,6 +2969,14 @@ async function onTileClick(tileIdx) {
     setStatus("Robber moved. Continue your turn.");
   }
   render();
+  if (state.pendingDevCardAction === "knight") {
+    state.pendingDevCardAction = "";
+    logEvent(`${currentPlayerObj().name} played Knight.`);
+    recomputeAwards();
+    checkVictory(state.currentPlayer);
+    recordGameAction("play_knight");
+    return;
+  }
   recordGameAction("move_robber");
 }
 
@@ -2390,9 +3000,49 @@ function renderBoard() {
   refs.board.setAttribute("preserveAspectRatio", "xMidYMid meet");
 
   const tileLayer = el("g");
+  const harborLayer = el("g");
   const edgeLayer = el("g");
   const nodeLayer = el("g");
   const overlayLayer = el("g");
+
+  for (const harbor of state.harbors) {
+    const dx = Math.cos(harbor.angle || 0);
+    const dy = Math.sin(harbor.angle || 0);
+    const anchorX = sx(harbor.mx);
+    const anchorY = sy(harbor.my);
+    const dockX = sx(harbor.mx + dx * 26);
+    const dockY = sy(harbor.my + dy * 26);
+    const labelX = sx(harbor.mx + dx * 62);
+    const labelY = sy(harbor.my + dy * 62);
+
+    const pier = el("line", {
+      x1: anchorX,
+      y1: anchorY,
+      x2: dockX,
+      y2: dockY,
+      class: "harbor-pier",
+    });
+    harborLayer.appendChild(pier);
+
+    const plaque = el("rect", {
+      x: labelX - 33,
+      y: labelY - 12,
+      rx: 9,
+      ry: 9,
+      width: 66,
+      height: 24,
+      class: "harbor-plaque",
+    });
+    harborLayer.appendChild(plaque);
+
+    const label = el("text", {
+      x: labelX,
+      y: labelY + 0.5,
+      class: `harbor-label harbor-${harbor.type}`,
+    });
+    label.textContent = harborLabel(harbor);
+    harborLayer.appendChild(label);
+  }
 
   for (const tile of state.tiles) {
     const points = tile.corners.map((p) => `${sx(p.x)},${sy(p.y)}`).join(" ");
@@ -2512,6 +3162,7 @@ function renderBoard() {
   }
 
   refs.board.appendChild(tileLayer);
+  refs.board.appendChild(harborLayer);
   refs.board.appendChild(edgeLayer);
   refs.board.appendChild(nodeLayer);
   refs.board.appendChild(overlayLayer);
@@ -2556,8 +3207,18 @@ function renderTableStats() {
 
     const vp = document.createElement("div");
     vp.className = "resource-row";
+    const awards = [];
+    if (state.awards.longestRoadHolder === idx) awards.push(`Longest Road ${state.awards.longestRoadLength}`);
+    if (state.awards.largestArmyHolder === idx) awards.push(`Largest Army ${player.playedKnights}`);
     vp.textContent = `VP ${victoryPoints(player)} | Roads ${player.roads.size} | Settlements ${player.settlements.size} | Cities ${player.cities.size}`;
     card.appendChild(vp);
+
+    if (awards.length > 0) {
+      const awardRow = document.createElement("div");
+      awardRow.className = "resource-row";
+      awardRow.textContent = awards.join(" | ");
+      card.appendChild(awardRow);
+    }
 
     const resources = document.createElement("div");
     resources.className = "resource-strip";
@@ -2580,6 +3241,16 @@ function renderTableStats() {
     });
     card.appendChild(resources);
 
+    const devSummary = document.createElement("div");
+    devSummary.className = "resource-row";
+    const devCounts = player.devCards
+      ? ["knight", "road_building", "year_of_plenty", "monopoly", "victory_point"]
+          .map((cardType) => `${cardType.replaceAll("_", " ")} ${player.devCards.hand[cardType] + player.devCards.boughtThisTurn[cardType]}`)
+          .join(" | ")
+      : "No development cards";
+    devSummary.textContent = `Dev: ${devCounts}`;
+    card.appendChild(devSummary);
+
     grid.appendChild(card);
   });
 
@@ -2594,6 +3265,8 @@ function renderBuildPanel() {
   }
 
   const player = currentPlayerObj();
+  const canAct = canTakeMainActions();
+  const canResolveFreeRoads = state.mainStep === "dev_card_resolution" && player.devCards?.freeRoadPlacements > 0;
   const wrap = document.createElement("div");
   wrap.className = "build-grid";
 
@@ -2606,6 +3279,7 @@ function renderBuildPanel() {
     { label: "Road", cost: COST.road },
     { label: "Settlement", cost: COST.settlement },
     { label: "City", cost: COST.city },
+    { label: "Dev Card", cost: COST.development },
   ];
 
   function appendCostChips(target, cost) {
@@ -2632,7 +3306,22 @@ function renderBuildPanel() {
   }
 
   entries.forEach((entry) => {
-    const canBuild = canAfford(player, entry.cost);
+    const actionReady =
+      entry.label === "Road" && player.devCards?.freeRoadPlacements > 0
+        ? true
+        : entry.label === "Road"
+        ? canBuildRoad(state.currentPlayer, -1, null, { skipEdgeCheck: true }).ok
+        : entry.label === "Settlement"
+        ? canBuildSettlement(state.currentPlayer, -1, false, { skipNodeCheck: true }).ok
+        : entry.label === "City"
+        ? canBuildCity(state.currentPlayer, -1, { skipNodeCheck: true }).ok
+        : canAfford(player, entry.cost) && state.devDeck.length > 0;
+    const canBuild =
+      entry.label === "Road"
+        ? canResolveFreeRoads || (canAct && actionReady)
+        : entry.label === "Dev Card"
+        ? canAct && actionReady
+        : canAct && actionReady;
     const card = document.createElement("div");
     card.className = `build-chip ${canBuild ? "ok" : "locked"}`;
 
@@ -2651,10 +3340,23 @@ function renderBuildPanel() {
 
     card.appendChild(head);
     appendCostChips(card, entry.cost);
+    if (entry.label === "Dev Card") {
+      const meta = document.createElement("div");
+      meta.className = "resource-row";
+      meta.textContent = `${state.devDeck.length} cards remain`;
+      card.appendChild(meta);
+
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "Buy";
+      button.disabled = !canBuild;
+      button.addEventListener("click", buyDevelopmentCardForCurrentPlayer);
+      card.appendChild(button);
+    }
     wrap.appendChild(card);
   });
 
-  const canBankTrade = hasBankTradeOption(player);
+  const canBankTrade = canAct && hasBankTradeOption(player);
   const bankTrade = document.createElement("div");
   bankTrade.className = `build-chip ${canBankTrade ? "ok" : "locked"}`;
 
@@ -2663,7 +3365,7 @@ function renderBuildPanel() {
 
   const bankLabel = document.createElement("span");
   bankLabel.className = "build-chip-label";
-  bankLabel.textContent = "Bank 4:1";
+  bankLabel.textContent = "Bank Trade";
   bankHead.appendChild(bankLabel);
 
   const bankState = document.createElement("span");
@@ -2679,7 +3381,71 @@ function renderBuildPanel() {
       return acc;
     }, {})
   );
+  const bankMeta = document.createElement("div");
+  bankMeta.className = "resource-row";
+  bankMeta.textContent = `Best rate: ${RESOURCES.map((resource) => `${resource} ${resolveHarborTradeRate(state, state.currentPlayer, resource)}:1`).join(" | ")}`;
+  bankTrade.appendChild(bankMeta);
   wrap.appendChild(bankTrade);
+
+  const playableDevCards = ["knight", "road_building", "year_of_plenty", "monopoly"].filter((cardType) =>
+    canPlayDevelopmentCard(player.devCards, cardType, { mainStep: state.mainStep })
+  );
+  if (player.devCards && (playableDevCards.length > 0 || countVictoryPointCards(player.devCards) > 0)) {
+    const devTray = document.createElement("div");
+    devTray.className = `build-chip ${playableDevCards.length > 0 ? "ok" : "locked"}`;
+    const devHead = document.createElement("div");
+    devHead.className = "build-chip-head";
+    const devLabel = document.createElement("span");
+    devLabel.className = "build-chip-label";
+    devLabel.textContent = "Dev Cards";
+    devHead.appendChild(devLabel);
+    const devState = document.createElement("span");
+    devState.className = "build-chip-state";
+    devState.textContent = playableDevCards.length > 0 ? "Playable" : "Held";
+    devHead.appendChild(devState);
+    devTray.appendChild(devHead);
+
+    const detail = document.createElement("div");
+    detail.className = "resource-row";
+    detail.textContent = `VP cards ${countVictoryPointCards(player.devCards)} | Playable ${playableDevCards.length}`;
+    devTray.appendChild(detail);
+
+    const playButton = document.createElement("button");
+    playButton.type = "button";
+    playButton.textContent = "Play Card";
+    playButton.disabled = playableDevCards.length === 0 || !localControlsCurrentTurn();
+    playButton.addEventListener("click", () => {
+      void playDevelopmentCardForCurrentPlayer();
+    });
+    devTray.appendChild(playButton);
+    wrap.appendChild(devTray);
+  }
+
+  const bankTray = document.createElement("div");
+  bankTray.className = "build-chip";
+  const bankTrayHead = document.createElement("div");
+  bankTrayHead.className = "build-chip-head";
+  const bankTrayLabel = document.createElement("span");
+  bankTrayLabel.className = "build-chip-label";
+  bankTrayLabel.textContent = "Bank";
+  bankTrayHead.appendChild(bankTrayLabel);
+  bankTray.appendChild(bankTrayHead);
+  const bankTrayDetail = document.createElement("div");
+  bankTrayDetail.className = "resource-row";
+  bankTrayDetail.textContent = RESOURCES.map((resource) => `${resource} ${state.bank[resource]}`).join(" | ");
+  bankTray.appendChild(bankTrayDetail);
+  if (state.bankShortage) {
+    const shortageRow = document.createElement("div");
+    shortageRow.className = "resource-row";
+    const shortages = RESOURCES.filter((resource) => state.bankShortage[resource] > 0).map(
+      (resource) => `${resource} short ${state.bankShortage[resource]}`
+    );
+    if (shortages.length > 0) {
+      shortageRow.textContent = `Recent shortage: ${shortages.join(" | ")}`;
+      bankTray.appendChild(shortageRow);
+    }
+  }
+  wrap.appendChild(bankTray);
 
   refs.buildPanel.appendChild(wrap);
 }
@@ -2784,15 +3550,18 @@ function renderControls() {
   refs.turnCallout.textContent = turnContextText(activePlayer);
 
   const inMainPhase = state.phase === "main" && state.phase !== "gameover";
-  const canRoll = inMainPhase && !controlsLockedToOtherPlayer && !state.hasRolled && !state.isRollingDice;
+  const canRoll = inMainPhase && !controlsLockedToOtherPlayer && canRollDiceNow();
   refs.rollBtn.disabled = !canRoll;
 
-  const canEndTurn =
-    inMainPhase && !controlsLockedToOtherPlayer && state.hasRolled && !state.pendingRobberMove && !state.isRollingDice;
+  const canResolveFreeRoads =
+    inMainPhase &&
+    !controlsLockedToOtherPlayer &&
+    state.mainStep === "dev_card_resolution" &&
+    Boolean(activePlayer?.devCards?.freeRoadPlacements > 0);
+  const canEndTurn = inMainPhase && !controlsLockedToOtherPlayer && canTakeMainActions();
   refs.endTurnBtn.disabled = !canEndTurn;
 
-  const canTakeActions =
-    inMainPhase && !controlsLockedToOtherPlayer && state.hasRolled && !state.pendingRobberMove && !state.isRollingDice;
+  const canTakeActions = inMainPhase && !controlsLockedToOtherPlayer && canTakeMainActions();
   const canBankTrade = Boolean(activePlayer && canTakeActions && hasBankTradeOption(activePlayer));
   const canPlayerTrade = Boolean(
     activePlayer &&
@@ -2822,14 +3591,26 @@ function renderControls() {
   refs.p2pGetAmount.disabled = !showTradeMenu || !canPlayerTrade;
 
   if (canBankTrade && activePlayer) {
-    const tradeable = RESOURCES.filter((res) => activePlayer.hand[res] >= 4);
-    refs.bankTradeHint.textContent = `Can give: ${tradeable.join(", ")}`;
-    if (!tradeable.includes(refs.tradeGive.value)) refs.tradeGive.value = tradeable[0];
+    const tradeable = RESOURCES.map((resource) => ({
+      resource,
+      rate: resolveHarborTradeRate(state, state.currentPlayer, resource),
+    })).filter(({ resource, rate }) => {
+      if (activePlayer.hand[resource] < rate) return false;
+      return RESOURCES.some((target) => target !== resource && state.bank[target] > 0);
+    });
+    refs.bankTradeTitle.textContent = "Bank Trade";
+    refs.bankTradeHint.textContent = `Can give: ${tradeable.map(({ resource, rate }) => `${resource} ${rate}:1`).join(" | ")}`;
+    if (!tradeable.some(({ resource }) => resource === refs.tradeGive.value)) refs.tradeGive.value = tradeable[0].resource;
+    const availableTargets = RESOURCES.filter((resource) => resource !== refs.tradeGive.value && state.bank[resource] > 0);
+    if (!availableTargets.includes(refs.tradeGet.value)) refs.tradeGet.value = availableTargets[0] || refs.tradeGive.value;
+  } else if (activePlayer) {
+    refs.bankTradeTitle.textContent = "Bank Trade";
     if (refs.tradeGet.value === refs.tradeGive.value) {
       const fallback = RESOURCES.find((res) => res !== refs.tradeGive.value);
       if (fallback) refs.tradeGet.value = fallback;
     }
-  } else {
+  }
+  if (!canBankTrade) {
     refs.bankTradeHint.textContent = "";
   }
 
@@ -2844,7 +3625,9 @@ function renderControls() {
     refs.p2pTradeHint.textContent = "";
   }
 
-  const showBuildActionPopup = Boolean(activePlayer && canTakeActions && hasAnyBuildByResources(activePlayer));
+  const showBuildActionPopup = Boolean(
+    activePlayer && ((canTakeActions && hasAnyBuildByResources(activePlayer)) || canResolveFreeRoads)
+  );
   refs.buildActionPopup.classList.toggle("hidden", !showBuildActionPopup);
   if (!showBuildActionPopup && (state.mode === "road" || state.mode === "settlement" || state.mode === "city")) {
     state.mode = "none";
@@ -2862,15 +3645,15 @@ function renderControls() {
       continue;
     }
     if (mode === "road") {
-      btn.disabled = !canAfford(activePlayer, COST.road);
+      btn.disabled = !(canResolveFreeRoads || (canTakeActions && canBuildRoad(state.currentPlayer, -1, null, { skipEdgeCheck: true }).ok));
       continue;
     }
     if (mode === "settlement") {
-      btn.disabled = !canAfford(activePlayer, COST.settlement);
+      btn.disabled = !(canTakeActions && canBuildSettlement(state.currentPlayer, -1, false, { skipNodeCheck: true }).ok);
       continue;
     }
     if (mode === "city") {
-      btn.disabled = !canAfford(activePlayer, COST.city);
+      btn.disabled = !(canTakeActions && canBuildCity(state.currentPlayer, -1, { skipNodeCheck: true }).ok);
       continue;
     }
     btn.disabled = true;
@@ -2902,7 +3685,7 @@ function render() {
 async function rollDice(options = {}) {
   const auto = options.auto === true;
   if (!auto && !assertLocalTurnControl()) return;
-  if (state.phase !== "main" || state.hasRolled || state.isRollingDice) return;
+  if (!canRollDiceNow()) return;
   const roll = 1 + Math.floor(Math.random() * 6) + 1 + Math.floor(Math.random() * 6);
   const finalPair = dicePairForTotal(roll);
   state.hasRolled = true;
@@ -2949,6 +3732,7 @@ async function rollDice(options = {}) {
     }
   } else {
     distributeResources(roll);
+    state.mainStep = "main_actions";
     if (!auto) setStatus(`${currentPlayerObj().name}: choose actions, then end turn.`);
   }
   render();
@@ -2957,18 +3741,16 @@ async function rollDice(options = {}) {
 
 function endTurn() {
   if (!assertLocalTurnControl()) return;
-  if (state.phase !== "main" || !state.hasRolled || state.pendingRobberMove || state.isRollingDice) return;
-  state.currentPlayer = (state.currentPlayer + 1) % state.players.length;
-  if (state.currentPlayer === 0) state.round += 1;
-  state.hasRolled = false;
+  if (!canTakeMainActions()) return;
   state.isRollingDice = false;
   state.rollingDiceValue = null;
   state.rollResultPopupValue = null;
-  state.diceResult = null;
   state.mode = "none";
   state.tradeMenuOpen = false;
-  setStatus(`${currentPlayerObj().name}: roll dice.`);
-  logEvent(`Turn passed to ${currentPlayerObj().name}.`);
+  const previousPlayerName = currentPlayerObj().name;
+  advancePairedTurn();
+  setStatus(turnContextText(currentPlayerObj()));
+  logEvent(`Turn passed from ${previousPlayerName} to ${currentPlayerObj().name}.`);
   restartTurnTimer();
   render();
   recordGameAction("end_turn");
@@ -2976,33 +3758,32 @@ function endTurn() {
 
 function bankTrade() {
   if (!assertLocalTurnControl()) return;
-  if (state.phase !== "main" || !state.hasRolled || state.pendingRobberMove || state.isRollingDice) return;
-  const player = currentPlayerObj();
+  if (!canTakeMainActions()) return;
   const give = refs.tradeGive.value;
   const get = refs.tradeGet.value;
-
-  if (give === get) {
-    setStatus("Choose different resources for trade.");
+  const trade = performBankTrade(state, state.currentPlayer, give, get);
+  if (!trade.ok) {
+    setStatus(trade.reason);
     render();
     return;
   }
-  if (player.hand[give] < 4) {
-    setStatus(`Need 4 ${give} to trade.`);
-    render();
-    return;
-  }
-
-  player.hand[give] -= 4;
-  player.hand[get] += 1;
-  logEvent(`${player.name} traded 4 ${give} for 1 ${get}.`);
-  setStatus(`${player.name} traded with the bank.`);
+  state.players = trade.state.players;
+  state.bank = trade.state.bank;
+  state.bankShortage = null;
+  logEvent(`${currentPlayerObj().name} traded ${trade.rate} ${give} for 1 ${get}.`);
+  setStatus(`${currentPlayerObj().name} traded with the bank at ${trade.rate}:1.`);
   render();
   recordGameAction("bank_trade");
 }
 
 function playerTrade() {
   if (!assertLocalTurnControl()) return;
-  if (state.phase !== "main" || !state.hasRolled || state.pendingRobberMove || state.isRollingDice) return;
+  if (!canTakeMainActions()) return;
+  if (!canUseDomesticTrade()) {
+    setStatus("Paired player 2 cannot trade with other players.");
+    render();
+    return;
+  }
   const fromIdx = state.currentPlayer;
   const toIdx = Number(refs.p2pTarget.value);
   if (!Number.isInteger(toIdx) || toIdx < 0 || toIdx >= state.players.length || toIdx === fromIdx) {
@@ -3061,10 +3842,175 @@ function playerTrade() {
   to.hand[giveRes] += giveAmt;
   to.hand[getRes] -= getAmt;
   from.hand[getRes] += getAmt;
+  state.bankShortage = null;
   logEvent(`${from.name} traded ${giveAmt} ${giveRes} for ${getAmt} ${getRes} with ${to.name}.`);
   setStatus("Trade completed.");
   render();
   recordGameAction("player_trade");
+}
+
+async function chooseResources(title, text, count) {
+  const picks = resourceMap(0);
+  for (let step = 0; step < count; step += 1) {
+    const picked = await showActionModal({
+      title,
+      text: `${text} (${step + 1}/${count})`,
+      options: RESOURCES.map((resource) => ({
+        label: resource[0].toUpperCase() + resource.slice(1),
+        value: resource,
+      })),
+      allowCancel: true,
+    });
+    if (!picked) return null;
+    picks[picked] += 1;
+  }
+  return picks;
+}
+
+function updatePlayerDevState(playerIdx, devCards) {
+  state.players[playerIdx].devCards = devCards;
+  state.players[playerIdx].playedKnights = devCards.playedKnights;
+  recomputeAwards();
+}
+
+function buyDevelopmentCardForCurrentPlayer() {
+  if (!assertLocalTurnControl()) return;
+  if (!canTakeMainActions()) return;
+  const purchase = buyDevelopmentCard(state, state.currentPlayer);
+  if (!purchase.ok) {
+    setStatus(purchase.reason);
+    render();
+    return;
+  }
+  state.players[state.currentPlayer] = {
+    ...state.players[state.currentPlayer],
+    hand: purchase.player.hand,
+    devCards: purchase.player.devCards,
+    playedKnights: purchase.player.devCards.playedKnights,
+  };
+  state.bank = purchase.bank;
+  state.devDeck = purchase.devDeck;
+  state.bankShortage = null;
+  setStatus(`${currentPlayerObj().name} bought a development card.`);
+  logEvent(`${currentPlayerObj().name} bought a development card.`);
+  checkVictory(state.currentPlayer);
+  render();
+  recordGameAction("buy_development_card");
+}
+
+async function playDevelopmentCardForCurrentPlayer() {
+  if (!assertLocalTurnControl()) return;
+  if (state.phase !== "main" || state.isRollingDice || state.pendingRobberMove) return;
+  const player = currentPlayerObj();
+  const turnState = { mainStep: state.mainStep };
+  const originalDevCards = normalizeDevelopmentState(player.devCards);
+  const playable = ["knight", "road_building", "year_of_plenty", "monopoly"].filter((cardType) =>
+    canPlayDevelopmentCard(player.devCards, cardType, turnState)
+  );
+  if (playable.length === 0) {
+    setStatus("No playable development cards right now.");
+    render();
+    return;
+  }
+
+  const picked = await showActionModal({
+    title: "Play Development Card",
+    text: "Choose a development card to play.",
+    options: playable.map((cardType) => ({
+      label: cardType.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()),
+      value: cardType,
+    })),
+    allowCancel: true,
+  });
+  if (!picked) {
+    render();
+    return;
+  }
+
+  const spent = spendDevelopmentCard(player.devCards, picked, turnState);
+  if (!spent.ok) {
+    setStatus(spent.reason);
+    render();
+    return;
+  }
+
+  const returnStep = state.mainStep;
+  state.pendingDevReturnStep = returnStep === "before_roll" ? "before_roll" : "main_actions";
+  state.pendingDevCardAction = picked;
+  updatePlayerDevState(state.currentPlayer, spent.devCards);
+
+  if (picked === "knight") {
+    state.pendingRobberMove = true;
+    state.mainStep = "move_robber";
+    state.mode = "robber";
+    setStatus(`${currentPlayerObj().name}: move the robber.`);
+    render();
+    return;
+  }
+
+  if (picked === "road_building") {
+    updatePlayerDevState(state.currentPlayer, applyRoadBuildingEffect(spent.devCards, 2));
+    state.mainStep = "dev_card_resolution";
+    state.mode = "road";
+    setStatus(`${currentPlayerObj().name}: place 2 free roads.`);
+    render();
+    return;
+  }
+
+  if (picked === "year_of_plenty") {
+    const desired = await chooseResources("Year of Plenty", "Choose a resource from the bank", 2);
+    if (!desired) {
+      updatePlayerDevState(state.currentPlayer, originalDevCards);
+      state.mainStep = returnStep;
+      state.pendingDevCardAction = "";
+      render();
+      return;
+    }
+    const effect = applyYearOfPlentyEffect(state.bank, player.hand, desired);
+    state.bank = effect.bank;
+    player.hand = effect.hand;
+    state.bankShortage = effect.shortage;
+    state.mainStep = state.pendingDevReturnStep || "main_actions";
+    state.pendingDevCardAction = "";
+    setStatus(`${player.name} resolved Year of Plenty.`);
+    logEvent(`${player.name} played Year of Plenty.`);
+    checkVictory(state.currentPlayer);
+    render();
+    recordGameAction("play_year_of_plenty");
+    return;
+  }
+
+  if (picked === "monopoly") {
+    const resource = await showActionModal({
+      title: "Monopoly",
+      text: "Choose the resource to collect from all opponents.",
+      options: RESOURCES.map((entry) => ({
+        label: entry[0].toUpperCase() + entry.slice(1),
+        value: entry,
+      })),
+      allowCancel: true,
+    });
+    if (!resource) {
+      updatePlayerDevState(state.currentPlayer, originalDevCards);
+      state.mainStep = returnStep;
+      state.pendingDevCardAction = "";
+      render();
+      return;
+    }
+    const effect = applyMonopolyEffect(state.players, state.currentPlayer, resource);
+    state.players = effect.players.map((entry, idx) => ({
+      ...state.players[idx],
+      hand: entry.hand,
+    }));
+    state.bankShortage = null;
+    state.mainStep = state.pendingDevReturnStep || "main_actions";
+    state.pendingDevCardAction = "";
+    logEvent(`${currentPlayerObj().name} played Monopoly on ${resource} and stole ${effect.stolen}.`);
+    setStatus(`${currentPlayerObj().name} stole ${effect.stolen} ${resource}.`);
+    checkVictory(state.currentPlayer);
+    render();
+    recordGameAction("play_monopoly");
+  }
 }
 
 function initTradeSelectors() {

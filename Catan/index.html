@@ -6,6 +6,7 @@
     <title>Catan Tabletop</title>
     <link rel="stylesheet" href="./style.css" />
     <script src="./catan-save-utils.js" defer></script>
+    <script src="./catan-rules.js" defer></script>
     <script src="./app.js" defer></script>
   </head>
   <body>
@@ -39,7 +40,7 @@
                 </div>
                 <div class="trade-popup-grid">
                   <div id="bankTradeSection" class="trade-popup-card">
-                    <h4>Bank (4:1)</h4>
+                    <h4 id="bankTradeTitle">Bank Trade</h4>
                     <div class="row trade-popup-row">
                       <label for="tradeGive">Give</label>
                       <select id="tradeGive"></select>
@@ -132,10 +133,12 @@
             <h2>Game Setup</h2>
             <div id="setupFields">
               <div class="row">
-                <label for="playerCount">Players</label>
+                <label for="playerCount">Players (3-6)</label>
                 <select id="playerCount">
                   <option value="3">3</option>
                   <option value="4">4</option>
+                  <option value="5">5</option>
+                  <option value="6">6</option>
                 </select>
               </div>
               <div class="row">

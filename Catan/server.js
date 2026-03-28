@@ -1,14 +1,28 @@
 "use strict";
 
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
-const { WebSocketServer, WebSocket } = require("ws");
+let WebSocketServer;
+let WebSocket;
+try {
+  ({ WebSocketServer, WebSocket } = require("ws"));
+} catch (_err) {
+  WebSocket = {
+    OPEN: 1,
+    CLOSED: 3,
+  };
+  WebSocketServer = class FakeWebSocketServer {
+    constructor() {}
+    on() {}
+  };
+}
 
 const PORT = Number(process.env.PORT) || 8000;
 const ROOT_DIR = process.cwd();
 const SAVE_ROOT_DIR = path.join(ROOT_DIR, "game_saves");
-const ROOM_MAX_PLAYERS = 4;
+const ROOM_MAX_PLAYERS = 6;
 const ROOM_MIN_PLAYERS = 3;
 const ROOM_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const MAX_HISTORY_STATES = 400;
@@ -90,6 +104,68 @@ function readJsonBody(req, onDone) {
 
 function cloneState(snapshot) {
   return JSON.parse(JSON.stringify(snapshot));
+}
+
+function issueReconnectToken() {
+  return crypto.randomBytes(12).toString("base64url");
+}
+
+function createMockSocket() {
+  return {
+    readyState: WebSocket.OPEN,
+    messages: [],
+    send(raw) {
+      this.messages.push(JSON.parse(String(raw)));
+    },
+  };
+}
+
+function registerSocket(ws) {
+  const clientId = `c${nextClientId.toString(36)}`;
+  nextClientId += 1;
+  socketMeta.set(ws, { id: clientId, roomCode: "" });
+  sendMessage(ws, { type: "welcome", clientId });
+  return clientId;
+}
+
+function dispatchSocketCommand(ws, payload) {
+  if (!payload || typeof payload !== "object") return;
+
+  if (payload.type === "create_room") {
+    handleCreateRoom(ws, payload);
+    return;
+  }
+  if (payload.type === "join_room") {
+    handleJoinRoom(ws, payload);
+    return;
+  }
+  if (payload.type === "resume_room") {
+    handleResumeRoom(ws, payload);
+    return;
+  }
+  if (payload.type === "leave_room") {
+    leaveRoom(ws);
+    return;
+  }
+  if (payload.type === "start_game") {
+    handleStartGame(ws, payload);
+    return;
+  }
+  if (payload.type === "state_sync") {
+    handleStateSync(ws, payload);
+    return;
+  }
+  if (payload.type === "rollback_state") {
+    handleRollbackState(ws);
+  }
+}
+
+function resetServerState() {
+  rooms.clear();
+  socketMeta.clear();
+  localSaveSessions.clear();
+  nextClientId = 1;
+  nextLocalSaveSessionId = 1;
 }
 
 function safeFileTime() {
@@ -219,6 +295,16 @@ function pushLocalSessionState(session, state, meta = {}) {
     at: new Date().toISOString(),
     gameState: stateCopy,
   });
+}
+
+function getRoom(code) {
+  return rooms.get(code) || null;
+}
+
+function simulateSocketClose(ws) {
+  if (ws && typeof ws === "object") ws.readyState = WebSocket.CLOSED;
+  leaveRoom(ws);
+  socketMeta.delete(ws);
 }
 
 function listSaveFilesByNewest() {
@@ -354,9 +440,10 @@ function uniqueRoomCode() {
   throw new Error("Unable to allocate room code.");
 }
 
-function createPublicRoom(room) {
+function createPublicRoom(room, viewerId = "") {
   const fileLabel = room.saveFile ? path.relative(ROOT_DIR, room.saveFile) : "";
   const historyCount = Array.isArray(room.history) ? room.history.length : 0;
+  const viewer = room.players.find((player) => player.id === viewerId) || null;
   return {
     code: room.code,
     hostId: room.hostId,
@@ -373,13 +460,21 @@ function createPublicRoom(room) {
       file: fileLabel,
       historyCount,
     },
+    self: viewer
+      ? {
+          id: viewer.id,
+          seatIndex: room.seatMap.indexOf(viewer.id),
+          connected: viewer.connected,
+          isHost: room.hostId === viewer.id,
+          reconnectToken: room.started ? viewer.reconnectToken || "" : "",
+        }
+      : null,
   };
 }
 
 function broadcastRoomState(room) {
-  const payload = { type: "room_state", room: createPublicRoom(room) };
   room.players.forEach((player) => {
-    if (player.ws) sendMessage(player.ws, payload);
+    if (player.ws) sendMessage(player.ws, { type: "room_state", room: createPublicRoom(room, player.id) });
   });
 }
 
@@ -415,8 +510,12 @@ function leaveRoom(ws) {
   markHost(room);
 
   const connectedCount = room.players.filter((entry) => entry.connected).length;
-  if (room.players.length === 0 || connectedCount === 0) {
+  if (!room.started && (room.players.length === 0 || connectedCount === 0)) {
     rooms.delete(room.code);
+    return;
+  }
+
+  if (room.started && connectedCount === 0) {
     return;
   }
 
@@ -442,6 +541,7 @@ function handleCreateRoom(ws, payload) {
         name: sanitizeName(payload.name, "Host"),
         connected: true,
         ws,
+        reconnectToken: "",
       },
     ],
     seatMap: [],
@@ -470,7 +570,7 @@ function handleJoinRoom(ws, payload) {
     return;
   }
   if (room.started) {
-    sendMessage(ws, { type: "room_error", message: "Game already started." });
+    sendMessage(ws, { type: "room_error", message: "Game already started. Use resume_room." });
     return;
   }
   if (room.players.length >= ROOM_MAX_PLAYERS) {
@@ -483,8 +583,56 @@ function handleJoinRoom(ws, payload) {
     name: sanitizeName(payload.name, `Player ${room.players.length + 1}`),
     connected: true,
     ws,
+    reconnectToken: "",
   });
   meta.roomCode = code;
+  broadcastRoomState(room);
+}
+
+function handleResumeRoom(ws, payload) {
+  const meta = socketMeta.get(ws);
+  if (!meta) return;
+  if (meta.roomCode) {
+    sendMessage(ws, { type: "room_error", message: "Leave your current room first." });
+    return;
+  }
+
+  const code = String(payload.code || "").toUpperCase();
+  const reconnectToken = String(payload.reconnectToken || payload.token || "").trim();
+  if (!code) {
+    sendMessage(ws, { type: "room_error", message: "Missing room code." });
+    return;
+  }
+  if (!reconnectToken) {
+    sendMessage(ws, { type: "room_error", message: "Missing reconnect token." });
+    return;
+  }
+
+  const room = rooms.get(code);
+  if (!room) {
+    sendMessage(ws, { type: "room_error", message: "Room not found." });
+    return;
+  }
+  if (!room.started) {
+    sendMessage(ws, { type: "room_error", message: "Room has not started yet." });
+    return;
+  }
+
+  const player = room.players.find((entry) => entry.reconnectToken === reconnectToken);
+  if (!player) {
+    sendMessage(ws, { type: "room_error", message: "Reconnect token not recognized." });
+    return;
+  }
+  if (player.connected && player.ws !== ws) {
+    sendMessage(ws, { type: "room_error", message: "That seat is already connected." });
+    return;
+  }
+
+  player.connected = true;
+  player.ws = ws;
+  meta.id = player.id;
+  meta.roomCode = code;
+  if (!room.hostId) room.hostId = player.id;
   broadcastRoomState(room);
 }
 
@@ -501,12 +649,16 @@ function handleStartGame(ws, payload) {
     return;
   }
   if (room.players.length < ROOM_MIN_PLAYERS || room.players.length > ROOM_MAX_PLAYERS) {
-    sendMessage(ws, { type: "room_error", message: "Rooms require 3-4 players." });
+    sendMessage(ws, { type: "room_error", message: "Rooms require 3-6 players." });
     return;
   }
 
   room.started = true;
   room.seatMap = room.players.map((player) => player.id);
+  room.players.forEach((player) => {
+    player.reconnectToken = issueReconnectToken();
+    player.connected = true;
+  });
   room.gameState = null;
   room.history = [];
   room.version = 0;
@@ -785,10 +937,7 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocketServer({ server });
 
 wss.on("connection", (ws) => {
-  const clientId = `c${nextClientId.toString(36)}`;
-  nextClientId += 1;
-  socketMeta.set(ws, { id: clientId, roomCode: "" });
-  sendMessage(ws, { type: "welcome", clientId });
+  registerSocket(ws);
 
   ws.on("message", (raw) => {
     let payload;
@@ -797,31 +946,7 @@ wss.on("connection", (ws) => {
     } catch (_err) {
       return;
     }
-    if (!payload || typeof payload !== "object") return;
-
-    if (payload.type === "create_room") {
-      handleCreateRoom(ws, payload);
-      return;
-    }
-    if (payload.type === "join_room") {
-      handleJoinRoom(ws, payload);
-      return;
-    }
-    if (payload.type === "leave_room") {
-      leaveRoom(ws);
-      return;
-    }
-    if (payload.type === "start_game") {
-      handleStartGame(ws, payload);
-      return;
-    }
-    if (payload.type === "state_sync") {
-      handleStateSync(ws, payload);
-      return;
-    }
-    if (payload.type === "rollback_state") {
-      handleRollbackState(ws);
-    }
+    dispatchSocketCommand(ws, payload);
   });
 
   ws.on("close", () => {
@@ -830,6 +955,34 @@ wss.on("connection", (ws) => {
   });
 });
 
-server.listen(PORT, () => {
-  console.log(`Catan server listening on http://localhost:${PORT}`);
-});
+if (require.main === module) {
+  server.listen(PORT, () => {
+    console.log(`Catan server listening on http://localhost:${PORT}`);
+  });
+}
+
+module.exports = {
+  PORT,
+  ROOT_DIR,
+  SAVE_ROOT_DIR,
+  rooms,
+  socketMeta,
+  localSaveSessions,
+  WebSocket,
+  server,
+  resetServerState,
+  createMockSocket,
+  registerSocket,
+  dispatchSocketCommand,
+  createPublicRoom,
+  broadcastRoomState,
+  getRoom,
+  simulateSocketClose,
+  leaveRoom,
+  handleCreateRoom,
+  handleJoinRoom,
+  handleResumeRoom,
+  handleStartGame,
+  handleStateSync,
+  handleRollbackState,
+};
