@@ -201,7 +201,7 @@ body::before {
   position: absolute;
   left: 0.62rem;
   top: 0.62rem;
-  z-index: 18;
+  z-index: 30;
   display: grid;
   gap: 0.46rem;
   justify-items: start;
