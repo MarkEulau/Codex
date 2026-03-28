@@ -44,13 +44,13 @@
                 <div class="trade-popup-grid">
                   <div id="bankTradeSection" class="trade-popup-card">
                     <h4 id="bankTradeTitle">Bank Trade</h4>
-                    <div class="row trade-popup-row">
-                      <label for="tradeGive">Give</label>
-                      <select id="tradeGive"></select>
+                    <div class="trade-picker-group">
+                      <div class="trade-picker-label">Give</div>
+                      <div id="bankTradeGiveGrid" class="trade-resource-grid" aria-label="Bank trade resources to give"></div>
                     </div>
-                    <div class="row trade-popup-row">
-                      <label for="tradeGet">Get</label>
-                      <select id="tradeGet"></select>
+                    <div class="trade-picker-group">
+                      <div class="trade-picker-label">Get</div>
+                      <div id="bankTradeGetGrid" class="trade-resource-grid" aria-label="Bank trade resources to get"></div>
                     </div>
                     <button id="tradeBtn">Trade</button>
                     <p id="bankTradeHint" class="trade-hint"></p>
@@ -62,15 +62,13 @@
                       <label for="p2pTarget">With</label>
                       <select id="p2pTarget"></select>
                     </div>
-                    <div class="row trade-row trade-popup-row">
-                      <label for="p2pGive">Give</label>
-                      <select id="p2pGive"></select>
-                      <input id="p2pGiveAmount" type="number" min="1" step="1" value="1" />
+                    <div class="trade-picker-group">
+                      <div class="trade-picker-label">Give</div>
+                      <div id="p2pGiveGrid" class="trade-resource-grid" aria-label="Player trade resources to give"></div>
                     </div>
-                    <div class="row trade-row trade-popup-row">
-                      <label for="p2pGet">Get</label>
-                      <select id="p2pGet"></select>
-                      <input id="p2pGetAmount" type="number" min="1" step="1" value="1" />
+                    <div class="trade-picker-group">
+                      <div class="trade-picker-label">Get</div>
+                      <div id="p2pGetGrid" class="trade-resource-grid" aria-label="Player trade resources to get"></div>
                     </div>
                     <button id="p2pTradeBtn">Propose Trade</button>
                     <p id="p2pTradeHint" class="trade-hint"></p>

@@ -444,23 +444,25 @@
     const player = getPlayer(state, playerIdx);
     if (!player) return { ok: false, reason: "Invalid player." };
     const rate = Math.max(1, Math.floor(Number(options.rate ?? resolveHarborTradeRate(state, playerIdx, giveResource)) || 4));
+    const count = Math.max(1, Math.floor(Number(options.count) || 1));
     const hand = normalizeResourceMap(player.hand, RESOURCE_TYPES, 0);
     const bank = normalizeResourceMap(state?.bank, RESOURCE_TYPES, 0);
 
-    if (hand[giveResource] < rate) return { ok: false, reason: `Need ${rate} ${giveResource} to trade.` };
-    if (bank[getResource] < 1) return { ok: false, reason: `The bank is out of ${getResource}.` };
+    if (hand[giveResource] < rate * count) return { ok: false, reason: `Need ${rate * count} ${giveResource} to trade.` };
+    if (bank[getResource] < count) return { ok: false, reason: `The bank is out of ${getResource}.` };
 
     const nextPlayers = Array.isArray(state?.players) ? state.players.slice() : [];
     const nextPlayer = {
       ...player,
-      hand: applyResourceDelta(hand, { [giveResource]: -rate, [getResource]: 1 }, RESOURCE_TYPES),
+      hand: applyResourceDelta(hand, { [giveResource]: -(rate * count), [getResource]: count }, RESOURCE_TYPES),
     };
     nextPlayers[playerIdx] = nextPlayer;
 
-    const nextBank = applyResourceDelta(bank, { [giveResource]: rate, [getResource]: -1 }, RESOURCE_TYPES);
+    const nextBank = applyResourceDelta(bank, { [giveResource]: rate * count, [getResource]: -count }, RESOURCE_TYPES);
     return {
       ok: true,
       rate,
+      count,
       state: {
         ...state,
         players: nextPlayers,

@@ -94,6 +94,7 @@ const {
   canPlayDevelopmentCard,
   spendDevelopmentCard,
   applyRoadBuildingEffect,
+  applyResourceDelta,
   recomputeLargestArmy,
   recomputeLongestRoad,
   computeVictoryPoints,
@@ -181,6 +182,10 @@ const state = {
   pendingRobberMove: false,
   mode: "none", // none | road | settlement | city | robber
   tradeMenuOpen: false,
+  tradeDrafts: {
+    bank: { give: resourceMap(0), get: resourceMap(0) },
+    player: { give: resourceMap(0), get: resourceMap(0) },
+  },
   bankShortage: null,
   status: "Set players and start.",
   log: [],
@@ -224,14 +229,12 @@ const refs = {
   rollBtn: document.getElementById("rollBtn"),
   endTurnBtn: document.getElementById("endTurnBtn"),
   tradeBtn: document.getElementById("tradeBtn"),
-  tradeGive: document.getElementById("tradeGive"),
-  tradeGet: document.getElementById("tradeGet"),
+  bankTradeGiveGrid: document.getElementById("bankTradeGiveGrid"),
+  bankTradeGetGrid: document.getElementById("bankTradeGetGrid"),
   p2pTradeBtn: document.getElementById("p2pTradeBtn"),
   p2pTarget: document.getElementById("p2pTarget"),
-  p2pGive: document.getElementById("p2pGive"),
-  p2pGiveAmount: document.getElementById("p2pGiveAmount"),
-  p2pGet: document.getElementById("p2pGet"),
-  p2pGetAmount: document.getElementById("p2pGetAmount"),
+  p2pGiveGrid: document.getElementById("p2pGiveGrid"),
+  p2pGetGrid: document.getElementById("p2pGetGrid"),
   bankTradeHint: document.getElementById("bankTradeHint"),
   p2pTradeHint: document.getElementById("p2pTradeHint"),
   phaseLabel: document.getElementById("phaseLabel"),
@@ -320,6 +323,242 @@ function emptyRollHistogram() {
   const out = {};
   for (const sum of DICE_SUMS) out[sum] = 0;
   return out;
+}
+
+function createEmptyTradeDraft() {
+  return {
+    give: resourceMap(0),
+    get: resourceMap(0),
+  };
+}
+
+function ensureTradeDrafts() {
+  if (!state.tradeDrafts || typeof state.tradeDrafts !== "object") {
+    state.tradeDrafts = {
+      bank: createEmptyTradeDraft(),
+      player: createEmptyTradeDraft(),
+    };
+    return;
+  }
+  if (!state.tradeDrafts.bank) state.tradeDrafts.bank = createEmptyTradeDraft();
+  if (!state.tradeDrafts.player) state.tradeDrafts.player = createEmptyTradeDraft();
+}
+
+function resetTradeDrafts(kind = null) {
+  ensureTradeDrafts();
+  if (kind) {
+    state.tradeDrafts[kind] = createEmptyTradeDraft();
+    return;
+  }
+  state.tradeDrafts.bank = createEmptyTradeDraft();
+  state.tradeDrafts.player = createEmptyTradeDraft();
+}
+
+function tradeSelectionEntries(selection) {
+  return RESOURCES.filter((resource) => (selection?.[resource] ?? 0) > 0).map((resource) => [
+    resource,
+    selection[resource],
+  ]);
+}
+
+function tradeSelectionSummary(selection) {
+  const entries = tradeSelectionEntries(selection);
+  if (entries.length === 0) return "none";
+  return entries.map(([resource, amount]) => `${resource} x${amount}`).join(" | ");
+}
+
+function currentTradeTargetIndex() {
+  const idx = Number(refs.p2pTarget.value);
+  if (!Number.isInteger(idx) || idx < 0 || idx >= state.players.length || idx === state.currentPlayer) return null;
+  return idx;
+}
+
+function tradeStepAmount(kind, side, resource) {
+  if (kind === "bank" && side === "give") return resolveHarborTradeRate(state, state.currentPlayer, resource);
+  return 1;
+}
+
+function tradeResourceLimit(kind, side, resource) {
+  if (!RESOURCES.includes(resource) || state.players.length === 0) return 0;
+  if (kind === "bank") {
+    return side === "give" ? currentPlayerObj().hand[resource] : state.bank[resource];
+  }
+  if (side === "give") return currentPlayerObj().hand[resource];
+  const targetIdx = currentTradeTargetIndex();
+  if (targetIdx === null) return 0;
+  return state.players[targetIdx].hand[resource];
+}
+
+function normalizeTradeDraft(kind) {
+  ensureTradeDrafts();
+  const draft = state.tradeDrafts[kind];
+  if (!draft) return;
+
+  for (const side of ["give", "get"]) {
+    for (const resource of RESOURCES) {
+      const step = tradeStepAmount(kind, side, resource);
+      const limit = tradeResourceLimit(kind, side, resource);
+      let value = Math.max(0, Math.min(draft[side][resource] || 0, limit));
+      if (step > 1) value -= value % step;
+      draft[side][resource] = value;
+    }
+  }
+
+  for (const resource of RESOURCES) {
+    const giveStep = tradeStepAmount(kind, "give", resource);
+    const getStep = tradeStepAmount(kind, "get", resource);
+    const cancelCount = Math.min(
+      Math.floor((draft.give[resource] || 0) / giveStep),
+      Math.floor((draft.get[resource] || 0) / getStep)
+    );
+    if (cancelCount > 0) {
+      draft.give[resource] -= cancelCount * giveStep;
+      draft.get[resource] -= cancelCount * getStep;
+    }
+  }
+}
+
+function canIncreaseTradeDraft(kind, side, resource) {
+  ensureTradeDrafts();
+  normalizeTradeDraft(kind);
+  const draft = state.tradeDrafts[kind];
+  const oppositeSide = side === "give" ? "get" : "give";
+  if ((draft[oppositeSide][resource] || 0) > 0) return true;
+  const step = tradeStepAmount(kind, side, resource);
+  const limit = tradeResourceLimit(kind, side, resource);
+  return (draft[side][resource] || 0) + step <= limit;
+}
+
+function adjustTradeDraft(kind, side, resource, direction = 1) {
+  if (!RESOURCES.includes(resource)) return;
+  ensureTradeDrafts();
+  normalizeTradeDraft(kind);
+  const draft = state.tradeDrafts[kind];
+  const oppositeSide = side === "give" ? "get" : "give";
+
+  if (direction > 0) {
+    const oppositeStep = tradeStepAmount(kind, oppositeSide, resource);
+    if ((draft[oppositeSide][resource] || 0) > 0) {
+      draft[oppositeSide][resource] = Math.max(0, draft[oppositeSide][resource] - oppositeStep);
+    } else {
+      const step = tradeStepAmount(kind, side, resource);
+      const limit = tradeResourceLimit(kind, side, resource);
+      if ((draft[side][resource] || 0) + step > limit) return;
+      draft[side][resource] += step;
+    }
+  } else {
+    const step = tradeStepAmount(kind, side, resource);
+    if ((draft[side][resource] || 0) <= 0) return;
+    draft[side][resource] = Math.max(0, draft[side][resource] - step);
+  }
+
+  normalizeTradeDraft(kind);
+  render();
+}
+
+function bankTradeDraftState() {
+  ensureTradeDrafts();
+  normalizeTradeDraft("bank");
+  const draft = state.tradeDrafts.bank;
+  const giveEntries = tradeSelectionEntries(draft.give);
+  const getEntries = tradeSelectionEntries(draft.get);
+
+  if (giveEntries.length === 0 || getEntries.length === 0) {
+    return { ok: false, reason: "Pick one resource to give and one to get." };
+  }
+  if (giveEntries.length !== 1 || getEntries.length !== 1) {
+    return { ok: false, reason: "Bank trades use one give resource and one get resource." };
+  }
+
+  const [giveResource, giveAmount] = giveEntries[0];
+  const [getResource, getAmount] = getEntries[0];
+  const rate = resolveHarborTradeRate(state, state.currentPlayer, giveResource);
+
+  if (giveResource === getResource) {
+    return { ok: false, reason: "Choose different resources for trade." };
+  }
+  if (giveAmount !== rate * getAmount) {
+    return {
+      ok: false,
+      reason: `Need ${rate} ${giveResource} for each ${getResource}.`,
+      rate,
+      giveResource,
+      giveAmount,
+      getResource,
+      getAmount,
+    };
+  }
+  if (tradeResourceLimit("bank", "give", giveResource) < giveAmount) {
+    return { ok: false, reason: `Need ${giveAmount} ${giveResource} to trade.` };
+  }
+  if (tradeResourceLimit("bank", "get", getResource) < getAmount) {
+    return { ok: false, reason: `The bank is short on ${getResource}.` };
+  }
+
+  return {
+    ok: true,
+    rate,
+    giveResource,
+    giveAmount,
+    getResource,
+    getAmount,
+    bundles: getAmount,
+  };
+}
+
+function playerTradeDraftState() {
+  ensureTradeDrafts();
+  normalizeTradeDraft("player");
+  const targetIdx = currentTradeTargetIndex();
+  if (targetIdx === null) {
+    return { ok: false, reason: "Choose a valid target player." };
+  }
+
+  const draft = state.tradeDrafts.player;
+  const giveEntries = tradeSelectionEntries(draft.give);
+  const getEntries = tradeSelectionEntries(draft.get);
+  if (giveEntries.length === 0 || getEntries.length === 0) {
+    return { ok: false, reason: "Pick resources for both sides of the trade." };
+  }
+
+  for (const resource of RESOURCES) {
+    if ((draft.give[resource] || 0) > 0 && (draft.get[resource] || 0) > 0) {
+      return { ok: false, reason: "A resource cannot be on both sides of the same trade." };
+    }
+  }
+
+  const from = state.players[state.currentPlayer];
+  const to = state.players[targetIdx];
+  for (const [resource, amount] of giveEntries) {
+    if (from.hand[resource] < amount) {
+      return { ok: false, reason: `${from.name} does not have ${amount} ${resource}.` };
+    }
+  }
+  for (const [resource, amount] of getEntries) {
+    if (to.hand[resource] < amount) {
+      return { ok: false, reason: `${to.name} does not have ${amount} ${resource}.` };
+    }
+  }
+
+  return {
+    ok: true,
+    targetIdx,
+    giveEntries,
+    getEntries,
+    giveSelection: { ...draft.give },
+    getSelection: { ...draft.get },
+  };
+}
+
+function tradeResourceAvailabilityLabel(kind, side, resource) {
+  const available = tradeResourceLimit(kind, side, resource);
+  if (kind === "bank") {
+    return side === "give" ? `Have ${available}` : `Bank ${available}`;
+  }
+  if (side === "give") return `Have ${available}`;
+  const targetIdx = currentTradeTargetIndex();
+  if (targetIdx === null) return "Pick player";
+  return `${state.players[targetIdx].name} ${available}`;
 }
 
 function activeResourceCounts(playerCount) {
@@ -483,6 +722,7 @@ function preparePlayerActionPhase(playerIdx, options = {}) {
   state.pendingRobberMove = false;
   state.mode = "none";
   state.tradeMenuOpen = false;
+  resetTradeDrafts();
   syncTurnStateMirror();
 }
 
@@ -2514,6 +2754,7 @@ function startMainPhase() {
   state.pendingRobberMove = false;
   state.mode = "none";
   state.tradeMenuOpen = false;
+  resetTradeDrafts();
   state.setup = null;
   state.pairedTurn.enabled = pairedTurnEnabled();
   state.pairedTurn.primaryPlayer = 0;
@@ -2567,6 +2808,7 @@ function beginSetup(players) {
   state.mainStep = "before_roll";
   state.mode = "none";
   state.tradeMenuOpen = false;
+  resetTradeDrafts();
   syncTurnStateMirror();
   setStatus(`${currentPlayerObj().name}: select settlement, then click again to confirm.`);
   logEvent("Setup started.");
@@ -2638,6 +2880,7 @@ function startGame(options = {}) {
 
   state.players = names.map((name, idx) => createPlayerState(name, idx));
   state.tradeMenuOpen = false;
+  resetTradeDrafts();
   initializeRuleState(playerCount);
 
   buildBoard();
@@ -3300,6 +3543,69 @@ function renderTableStats() {
   refs.tableStats.appendChild(grid);
 }
 
+function renderTradeResourceGrid(kind, side, container) {
+  if (!container) return;
+  ensureTradeDrafts();
+  normalizeTradeDraft(kind);
+  container.innerHTML = "";
+  const selection = state.tradeDrafts[kind][side];
+
+  for (const resource of RESOURCES) {
+    const count = selection[resource] || 0;
+    const step = tradeStepAmount(kind, side, resource);
+    const canAdd = canIncreaseTradeDraft(kind, side, resource);
+
+    const card = document.createElement("div");
+    card.className = `trade-resource-card${count > 0 ? " selected" : ""}${canAdd ? "" : " locked"}`;
+
+    const addBtn = document.createElement("button");
+    addBtn.type = "button";
+    addBtn.className = "trade-resource-btn";
+    addBtn.disabled = !canAdd;
+    addBtn.title = `${resource}: click to add ${step}`;
+    addBtn.addEventListener("click", () => adjustTradeDraft(kind, side, resource, 1));
+
+    const iconWrap = document.createElement("span");
+    iconWrap.className = "trade-resource-icon";
+    iconWrap.appendChild(createResourceIconSvg(resource));
+    addBtn.appendChild(iconWrap);
+
+    const name = document.createElement("span");
+    name.className = "trade-resource-name";
+    name.textContent = resource;
+    addBtn.appendChild(name);
+
+    const meta = document.createElement("span");
+    meta.className = "trade-resource-meta";
+    meta.textContent = tradeResourceAvailabilityLabel(kind, side, resource);
+    addBtn.appendChild(meta);
+
+    const stepPill = document.createElement("span");
+    stepPill.className = "trade-resource-step";
+    stepPill.textContent = `+${step}`;
+    addBtn.appendChild(stepPill);
+
+    card.appendChild(addBtn);
+
+    if (count > 0) {
+      const selected = document.createElement("span");
+      selected.className = "trade-resource-selected";
+      selected.textContent = String(count);
+      card.appendChild(selected);
+
+      const removeBtn = document.createElement("button");
+      removeBtn.type = "button";
+      removeBtn.className = "trade-resource-dec";
+      removeBtn.textContent = "-";
+      removeBtn.title = `Remove ${step} ${resource}`;
+      removeBtn.addEventListener("click", () => adjustTradeDraft(kind, side, resource, -1));
+      card.appendChild(removeBtn);
+    }
+
+    container.appendChild(card);
+  }
+}
+
 function renderBuildPanel() {
   refs.buildPanel.innerHTML = "";
   if (state.players.length === 0) {
@@ -3656,7 +3962,10 @@ function renderControls() {
       hasPlayerTradeOption(state.currentPlayer)
   );
   const hasTradeChoice = canBankTrade || canPlayerTrade;
-  if (!hasTradeChoice) state.tradeMenuOpen = false;
+  if (!hasTradeChoice) {
+    state.tradeMenuOpen = false;
+    resetTradeDrafts();
+  }
   const showTradeMenu = hasTradeChoice && state.tradeMenuOpen;
 
   refs.tradePromptPopup.classList.toggle("hidden", !hasTradeChoice || showTradeMenu);
@@ -3669,16 +3978,21 @@ function renderControls() {
   refs.openPlayerTradeBtn.disabled = !canPlayerTrade;
   refs.closeTradeMenuBtn.disabled = !hasTradeChoice;
 
-  refs.tradeBtn.disabled = !showTradeMenu || !canBankTrade;
-  refs.tradeGive.disabled = !showTradeMenu || !canBankTrade;
-  refs.tradeGet.disabled = !showTradeMenu || !canBankTrade;
-  refs.p2pTradeBtn.disabled = !showTradeMenu || !canPlayerTrade;
-  refs.p2pTarget.disabled = !showTradeMenu || !canPlayerTrade;
-  refs.p2pGive.disabled = !showTradeMenu || !canPlayerTrade;
-  refs.p2pGet.disabled = !showTradeMenu || !canPlayerTrade;
-  refs.p2pGiveAmount.disabled = !showTradeMenu || !canPlayerTrade;
-  refs.p2pGetAmount.disabled = !showTradeMenu || !canPlayerTrade;
+  normalizeTradeDraft("bank");
+  normalizeTradeDraft("player");
+  renderTradeResourceGrid("bank", "give", refs.bankTradeGiveGrid);
+  renderTradeResourceGrid("bank", "get", refs.bankTradeGetGrid);
+  renderTradeResourceGrid("player", "give", refs.p2pGiveGrid);
+  renderTradeResourceGrid("player", "get", refs.p2pGetGrid);
 
+  const bankDraftState = bankTradeDraftState();
+  const playerDraftState = playerTradeDraftState();
+
+  refs.tradeBtn.disabled = !showTradeMenu || !canBankTrade || !bankDraftState.ok;
+  refs.p2pTarget.disabled = !showTradeMenu || !canPlayerTrade;
+  refs.p2pTradeBtn.disabled = !showTradeMenu || !canPlayerTrade || !playerDraftState.ok;
+
+  refs.bankTradeTitle.textContent = "Bank Trade";
   if (canBankTrade && activePlayer) {
     const tradeable = RESOURCES.map((resource) => ({
       resource,
@@ -3687,19 +4001,11 @@ function renderControls() {
       if (activePlayer.hand[resource] < rate) return false;
       return RESOURCES.some((target) => target !== resource && state.bank[target] > 0);
     });
-    refs.bankTradeTitle.textContent = "Bank Trade";
-    refs.bankTradeHint.textContent = `Can give: ${tradeable.map(({ resource, rate }) => `${resource} ${rate}:1`).join(" | ")}`;
-    if (!tradeable.some(({ resource }) => resource === refs.tradeGive.value)) refs.tradeGive.value = tradeable[0].resource;
-    const availableTargets = RESOURCES.filter((resource) => resource !== refs.tradeGive.value && state.bank[resource] > 0);
-    if (!availableTargets.includes(refs.tradeGet.value)) refs.tradeGet.value = availableTargets[0] || refs.tradeGive.value;
-  } else if (activePlayer) {
-    refs.bankTradeTitle.textContent = "Bank Trade";
-    if (refs.tradeGet.value === refs.tradeGive.value) {
-      const fallback = RESOURCES.find((res) => res !== refs.tradeGive.value);
-      if (fallback) refs.tradeGet.value = fallback;
-    }
-  }
-  if (!canBankTrade) {
+    const baseHint = `Can give: ${tradeable.map(({ resource, rate }) => `${resource} ${rate}:1`).join(" | ")}`;
+    refs.bankTradeHint.textContent = bankDraftState.ok
+      ? `Selected: ${bankDraftState.giveAmount} ${bankDraftState.giveResource} for ${bankDraftState.getAmount} ${bankDraftState.getResource}. ${baseHint}`
+      : `${baseHint}${bankDraftState.reason ? ` | ${bankDraftState.reason}` : ""}`;
+  } else {
     refs.bankTradeHint.textContent = "";
   }
 
@@ -3709,7 +4015,10 @@ function renderControls() {
       if (idx === state.currentPlayer) continue;
       if (resourceCount(state.players[idx]) > 0) targets.push(state.players[idx].name);
     }
-    refs.p2pTradeHint.textContent = `Available players: ${targets.join(", ")}`;
+    const draftSummary = playerDraftState.ok
+      ? `Selected: give ${tradeSelectionSummary(playerDraftState.giveSelection)} | get ${tradeSelectionSummary(playerDraftState.getSelection)}`
+      : playerDraftState.reason;
+    refs.p2pTradeHint.textContent = `Available players: ${targets.join(", ")}${draftSummary ? ` | ${draftSummary}` : ""}`;
   } else {
     refs.p2pTradeHint.textContent = "";
   }
@@ -3837,6 +4146,7 @@ function endTurn() {
   state.rollResultPopupValue = null;
   state.mode = "none";
   state.tradeMenuOpen = false;
+  resetTradeDrafts();
   const previousPlayerName = currentPlayerObj().name;
   advancePairedTurn();
   setStatus(turnContextText(currentPlayerObj()));
@@ -3849,9 +4159,15 @@ function endTurn() {
 function bankTrade() {
   if (!assertLocalTurnControl()) return;
   if (!canTakeMainActions()) return;
-  const give = refs.tradeGive.value;
-  const get = refs.tradeGet.value;
-  const trade = performBankTrade(state, state.currentPlayer, give, get);
+  const draft = bankTradeDraftState();
+  if (!draft.ok) {
+    setStatus(draft.reason);
+    render();
+    return;
+  }
+  const trade = performBankTrade(state, state.currentPlayer, draft.giveResource, draft.getResource, {
+    count: draft.bundles,
+  });
   if (!trade.ok) {
     setStatus(trade.reason);
     render();
@@ -3860,8 +4176,13 @@ function bankTrade() {
   state.players = trade.state.players;
   state.bank = trade.state.bank;
   state.bankShortage = null;
-  logEvent(`${currentPlayerObj().name} traded ${trade.rate} ${give} for 1 ${get}.`);
-  setStatus(`${currentPlayerObj().name} traded with the bank at ${trade.rate}:1.`);
+  resetTradeDrafts("bank");
+  logEvent(
+    `${currentPlayerObj().name} traded ${draft.giveAmount} ${draft.giveResource} for ${draft.getAmount} ${draft.getResource}.`
+  );
+  setStatus(
+    `${currentPlayerObj().name} traded with the bank at ${trade.rate}:1 for ${draft.getAmount} ${draft.getResource}.`
+  );
   render();
   recordGameAction("bank_trade");
 }
@@ -3875,51 +4196,21 @@ function playerTrade() {
     return;
   }
   const fromIdx = state.currentPlayer;
-  const toIdx = Number(refs.p2pTarget.value);
-  if (!Number.isInteger(toIdx) || toIdx < 0 || toIdx >= state.players.length || toIdx === fromIdx) {
-    setStatus("Choose a valid target player.");
+  const draft = playerTradeDraftState();
+  if (!draft.ok) {
+    setStatus(draft.reason);
     render();
     return;
   }
-
-  const giveRes = refs.p2pGive.value;
-  const getRes = refs.p2pGet.value;
-  const giveAmt = parsePositiveInt(refs.p2pGiveAmount.value);
-  const getAmt = parsePositiveInt(refs.p2pGetAmount.value);
-
-  if (!RESOURCES.includes(giveRes) || !RESOURCES.includes(getRes)) {
-    setStatus("Choose valid resources for trade.");
-    render();
-    return;
-  }
-  if (giveAmt === null || getAmt === null) {
-    setStatus("Trade amounts must be whole numbers >= 1.");
-    render();
-    return;
-  }
-  if (giveRes === getRes) {
-    setStatus("Give and get resources must be different.");
-    render();
-    return;
-  }
+  const toIdx = draft.targetIdx;
 
   const from = state.players[fromIdx];
   const to = state.players[toIdx];
-  if (from.hand[giveRes] < giveAmt) {
-    setStatus(`${from.name} does not have ${giveAmt} ${giveRes}.`);
-    render();
-    return;
-  }
-  if (to.hand[getRes] < getAmt) {
-    setStatus(`${to.name} does not have ${getAmt} ${getRes}.`);
-    render();
-    return;
-  }
 
   const accepted = window.confirm(
     `${to.name}, accept this trade?\n` +
-      `${from.name} gives ${giveAmt} ${giveRes}\n` +
-      `${to.name} gives ${getAmt} ${getRes}`
+      `${from.name} gives ${tradeSelectionSummary(draft.giveSelection)}\n` +
+      `${to.name} gives ${tradeSelectionSummary(draft.getSelection)}`
   );
   if (!accepted) {
     logEvent(`${to.name} declined a trade from ${from.name}.`);
@@ -3928,12 +4219,23 @@ function playerTrade() {
     return;
   }
 
-  from.hand[giveRes] -= giveAmt;
-  to.hand[giveRes] += giveAmt;
-  to.hand[getRes] -= getAmt;
-  from.hand[getRes] += getAmt;
+  from.hand = applyResourceDelta(from.hand, draft.getSelection, RESOURCES);
+  from.hand = applyResourceDelta(
+    from.hand,
+    Object.fromEntries(draft.giveEntries.map(([resource, amount]) => [resource, -amount])),
+    RESOURCES
+  );
+  to.hand = applyResourceDelta(to.hand, draft.giveSelection, RESOURCES);
+  to.hand = applyResourceDelta(
+    to.hand,
+    Object.fromEntries(draft.getEntries.map(([resource, amount]) => [resource, -amount])),
+    RESOURCES
+  );
   state.bankShortage = null;
-  logEvent(`${from.name} traded ${giveAmt} ${giveRes} for ${getAmt} ${getRes} with ${to.name}.`);
+  resetTradeDrafts("player");
+  logEvent(
+    `${from.name} traded ${tradeSelectionSummary(draft.giveSelection)} for ${tradeSelectionSummary(draft.getSelection)} with ${to.name}.`
+  );
   setStatus("Trade completed.");
   render();
   recordGameAction("player_trade");
@@ -4104,33 +4406,7 @@ async function playDevelopmentCardForCurrentPlayer() {
 }
 
 function initTradeSelectors() {
-  refs.tradeGive.innerHTML = "";
-  refs.tradeGet.innerHTML = "";
-  refs.p2pGive.innerHTML = "";
-  refs.p2pGet.innerHTML = "";
-  for (const res of RESOURCES) {
-    const a = document.createElement("option");
-    a.value = res;
-    a.textContent = res;
-    refs.tradeGive.appendChild(a);
-
-    const b = document.createElement("option");
-    b.value = res;
-    b.textContent = res;
-    refs.tradeGet.appendChild(b);
-
-    const c = document.createElement("option");
-    c.value = res;
-    c.textContent = res;
-    refs.p2pGive.appendChild(c);
-
-    const d = document.createElement("option");
-    d.value = res;
-    d.textContent = res;
-    refs.p2pGet.appendChild(d);
-  }
-  refs.tradeGet.value = "ore";
-  refs.p2pGet.value = "ore";
+  resetTradeDrafts();
 }
 
 function refreshPlayerTradeTargets() {
@@ -4210,7 +4486,7 @@ function bindEvents() {
     if (refs.tradePromptPopup.classList.contains("hidden")) return;
     state.tradeMenuOpen = true;
     render();
-    refs.tradeGive.focus();
+    refs.bankTradeGiveGrid.querySelector(".trade-resource-btn:not(:disabled)")?.focus();
   });
   refs.openPlayerTradeBtn.addEventListener("click", () => {
     if (refs.tradePromptPopup.classList.contains("hidden")) return;
@@ -4220,10 +4496,15 @@ function bindEvents() {
   });
   refs.closeTradeMenuBtn.addEventListener("click", () => {
     state.tradeMenuOpen = false;
+    resetTradeDrafts();
     render();
   });
   refs.tradeBtn.addEventListener("click", bankTrade);
   refs.p2pTradeBtn.addEventListener("click", playerTrade);
+  refs.p2pTarget.addEventListener("change", () => {
+    resetTradeDrafts("player");
+    if (!refs.tradeActionPopup.classList.contains("hidden")) render();
+  });
   refs.actionModalCancelBtn.addEventListener("click", () => closeActionModal(null));
   refs.actionModal.addEventListener("click", (event) => {
     const cancelVisible = !refs.actionModalCancelBtn.classList.contains("hidden");
