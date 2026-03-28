@@ -15,6 +15,8 @@ Then open:
 
 - `http://localhost:8000`
 
+On Windows, you can also double-click `run-catan.bat`. It installs dependencies if needed, starts the local server, and opens the app in your browser.
+
 ## Testing
 
 Run the current unit suite from the repo root:
