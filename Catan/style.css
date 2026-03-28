@@ -579,7 +579,8 @@ body::before {
   position: absolute;
   left: 0.58rem;
   bottom: calc(0.58rem + var(--corner-orb-size) + var(--corner-dock-gap));
-  z-index: 22;
+  /* Keep build/trade dock popouts above board affordance stacks without overtaking full-screen modals. */
+  z-index: 40;
   display: flex;
   gap: 0.38rem;
 }
