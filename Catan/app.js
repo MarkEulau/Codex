@@ -253,7 +253,7 @@ const refs = {
   bankTradeGiveGrid: document.getElementById("bankTradeGiveGrid"),
   bankTradeGetGrid: document.getElementById("bankTradeGetGrid"),
   p2pTradeBtn: document.getElementById("p2pTradeBtn"),
-  p2pTarget: document.getElementById("p2pTarget"),
+  p2pTargetGrid: document.getElementById("p2pTargetGrid"),
   p2pGiveGrid: document.getElementById("p2pGiveGrid"),
   p2pGetGrid: document.getElementById("p2pGetGrid"),
   bankTradeHint: document.getElementById("bankTradeHint"),
@@ -412,7 +412,7 @@ function normalizeActiveTradeTab(canBankTrade, canPlayerTrade) {
 
 function focusTradeTab(tab = state.activeTradeTab) {
   if (tab === "player") {
-    refs.p2pTarget.focus();
+    refs.p2pTargetGrid.querySelector('.trade-target-btn[aria-pressed="true"]:not(:disabled), .trade-target-btn:not(:disabled)')?.focus();
     return;
   }
   refs.bankTradeGiveGrid.querySelector(".trade-resource-btn:not(:disabled)")?.focus();
@@ -538,9 +538,31 @@ function adjustDiscardDraft(resource, direction = 1) {
 }
 
 function currentTradeTargetIndex() {
-  const idx = Number(refs.p2pTarget.value);
+  const idx = Number(refs.p2pTargetGrid?.dataset.targetIdx ?? "");
   if (!Number.isInteger(idx) || idx < 0 || idx >= state.players.length || idx === state.currentPlayer) return null;
   return idx;
+}
+
+function availablePlayerTradeTargets() {
+  const targets = [];
+  for (let idx = 0; idx < state.players.length; idx += 1) {
+    if (idx === state.currentPlayer) continue;
+    if (resourceCount(state.players[idx]) === 0) continue;
+    targets.push(idx);
+  }
+  return targets;
+}
+
+function syncPlayerTradeTargetSelection(targetIndexes = availablePlayerTradeTargets()) {
+  if (!refs.p2pTargetGrid) return null;
+  const selected = currentTradeTargetIndex();
+  const nextSelected = targetIndexes.includes(selected) ? selected : (targetIndexes[0] ?? null);
+  if (nextSelected === null) {
+    delete refs.p2pTargetGrid.dataset.targetIdx;
+    return null;
+  }
+  refs.p2pTargetGrid.dataset.targetIdx = String(nextSelected);
+  return nextSelected;
 }
 
 function resourceCardsInCirculation(resource) {
@@ -4281,6 +4303,68 @@ function renderDiscardResourceGrid() {
   }
 }
 
+function renderPlayerTradeTargetGrid(targetIndexes, disabled = false) {
+  if (!refs.p2pTargetGrid) return;
+  const selectedIdx = syncPlayerTradeTargetSelection(targetIndexes);
+  refs.p2pTargetGrid.innerHTML = "";
+  refs.p2pTargetGrid.setAttribute("aria-disabled", disabled ? "true" : "false");
+
+  if (targetIndexes.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "trade-target-empty";
+    empty.textContent = "No opponents currently have cards to trade.";
+    refs.p2pTargetGrid.appendChild(empty);
+    return;
+  }
+
+  for (const idx of targetIndexes) {
+    const player = state.players[idx];
+    const selected = idx === selectedIdx;
+    const card = document.createElement("div");
+    card.className = `trade-target-card${selected ? " selected" : ""}`;
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "trade-target-btn";
+    button.disabled = disabled;
+    button.dataset.playerIdx = String(idx);
+    button.setAttribute("aria-pressed", selected ? "true" : "false");
+    button.style.setProperty("--trade-target-accent", player.color || PLAYER_COLORS[idx % PLAYER_COLORS.length]);
+    button.title = `Trade with ${player.name}`;
+    button.addEventListener("click", () => {
+      if (disabled || idx === currentTradeTargetIndex()) return;
+      refs.p2pTargetGrid.dataset.targetIdx = String(idx);
+      resetTradeDrafts("player");
+      if (!refs.tradeActionPopup.classList.contains("hidden")) render();
+    });
+
+    const swatch = document.createElement("span");
+    swatch.className = "trade-target-swatch";
+    button.appendChild(swatch);
+
+    const name = document.createElement("span");
+    name.className = "trade-target-name";
+    name.textContent = player.name;
+    button.appendChild(name);
+
+    const meta = document.createElement("span");
+    meta.className = "trade-target-meta";
+    meta.textContent = `Cards ${resourceCount(player)}`;
+    button.appendChild(meta);
+
+    card.appendChild(button);
+
+    if (selected) {
+      const badge = document.createElement("span");
+      badge.className = "trade-target-selected";
+      badge.textContent = "Selected";
+      card.appendChild(badge);
+    }
+
+    refs.p2pTargetGrid.appendChild(card);
+  }
+}
+
 function renderBuildPanel() {
   refs.buildPanel.innerHTML = "";
   if (state.players.length === 0) {
@@ -4591,9 +4675,10 @@ function renderControls() {
     refs.restartBtn.disabled = false;
   }
 
-  refreshPlayerTradeTargets();
   refs.phaseLabel.textContent = phaseLabel();
   const activePlayer = state.players.length > 0 ? currentPlayerObj() : null;
+  const playerTradeTargets = availablePlayerTradeTargets();
+  syncPlayerTradeTargetSelection(playerTradeTargets);
   const controlsLockedToOtherPlayer = isOnlineGameStarted() && !localControlsCurrentTurn();
   refs.currentPlayerLabel.textContent =
     activePlayer ? `${activePlayer.name}${state.phase === "setup" ? " (setup)" : ""}` : "-";
@@ -4655,7 +4740,7 @@ function renderControls() {
   const canPlayerTrade = Boolean(
     activePlayer &&
       canTakeActions &&
-      refs.p2pTarget.options.length > 0 &&
+      playerTradeTargets.length > 0 &&
       hasPlayerTradeOption(state.currentPlayer)
   );
   const hasTradeChoice = canBankTrade || canPlayerTrade;
@@ -4689,6 +4774,7 @@ function renderControls() {
   normalizeTradeDraft("player");
   renderTradeResourceGrid("bank", "give", refs.bankTradeGiveGrid);
   renderTradeResourceGrid("bank", "get", refs.bankTradeGetGrid);
+  renderPlayerTradeTargetGrid(playerTradeTargets, !showTradeMenu || !canPlayerTrade);
   renderTradeResourceGrid("player", "give", refs.p2pGiveGrid);
   renderTradeResourceGrid("player", "get", refs.p2pGetGrid);
 
@@ -4696,7 +4782,6 @@ function renderControls() {
   const playerDraftState = playerTradeDraftState();
 
   refs.tradeBtn.disabled = !showTradeMenu || !canBankTrade || !bankDraftState.ok;
-  refs.p2pTarget.disabled = !showTradeMenu || !canPlayerTrade;
   refs.p2pTradeBtn.disabled = !showTradeMenu || !canPlayerTrade || !playerDraftState.ok;
 
   refs.bankTradeTitle.textContent = "Bank Trade";
@@ -4717,11 +4802,7 @@ function renderControls() {
   }
 
   if (canPlayerTrade) {
-    const targets = [];
-    for (let idx = 0; idx < state.players.length; idx += 1) {
-      if (idx === state.currentPlayer) continue;
-      if (resourceCount(state.players[idx]) > 0) targets.push(state.players[idx].name);
-    }
+    const targets = playerTradeTargets.map((idx) => state.players[idx].name);
     const draftSummary = playerDraftState.ok
       ? `Selected: give ${tradeSelectionSummary(playerDraftState.giveSelection)} | get ${tradeSelectionSummary(playerDraftState.getSelection)}`
       : playerDraftState.reason;
@@ -5158,27 +5239,6 @@ function initTradeSelectors() {
   resetTradeDrafts();
 }
 
-function refreshPlayerTradeTargets() {
-  const selected = refs.p2pTarget.value;
-  refs.p2pTarget.innerHTML = "";
-  if (state.players.length < 2) return;
-
-  for (let idx = 0; idx < state.players.length; idx += 1) {
-    if (idx === state.currentPlayer) continue;
-    if (resourceCount(state.players[idx]) === 0) continue;
-    const option = document.createElement("option");
-    option.value = String(idx);
-    option.textContent = state.players[idx].name;
-    refs.p2pTarget.appendChild(option);
-  }
-
-  if (selected && refs.p2pTarget.querySelector(`option[value="${selected}"]`)) {
-    refs.p2pTarget.value = selected;
-    return;
-  }
-  refs.p2pTarget.selectedIndex = 0;
-}
-
 function createNameInputs() {
   refs.nameInputs.innerHTML = "";
   const count = Number(refs.playerCount.value);
@@ -5254,10 +5314,6 @@ function bindEvents() {
   });
   refs.tradeBtn.addEventListener("click", bankTrade);
   refs.p2pTradeBtn.addEventListener("click", playerTrade);
-  refs.p2pTarget.addEventListener("change", () => {
-    resetTradeDrafts("player");
-    if (!refs.tradeActionPopup.classList.contains("hidden")) render();
-  });
   refs.discardSubmitBtn.addEventListener("click", submitDiscardDraft);
   refs.actionModalCancelBtn.addEventListener("click", () => closeActionModal(null));
   refs.actionModal.addEventListener("click", (event) => {
