@@ -1837,26 +1837,113 @@ input:focus-visible {
   letter-spacing: 0.07em;
 }
 
-.harbor-pier {
-  stroke: rgba(74, 57, 36, 0.72);
-  stroke-width: 4.5;
+.harbor {
+  --harbor-accent: #dcb66b;
+  --harbor-accent-soft: rgba(220, 182, 107, 0.34);
+  --harbor-plaque-fill: rgba(34, 52, 78, 0.94);
+}
+
+.harbor-generic {
+  --harbor-accent: #d8c7a0;
+  --harbor-accent-soft: rgba(216, 199, 160, 0.34);
+}
+
+.harbor-wood {
+  --harbor-accent: #82be6c;
+  --harbor-accent-soft: rgba(130, 190, 108, 0.32);
+}
+
+.harbor-brick {
+  --harbor-accent: #d68a69;
+  --harbor-accent-soft: rgba(214, 138, 105, 0.32);
+}
+
+.harbor-sheep {
+  --harbor-accent: #dce7ba;
+  --harbor-accent-soft: rgba(220, 231, 186, 0.3);
+}
+
+.harbor-wheat {
+  --harbor-accent: #e6ca61;
+  --harbor-accent-soft: rgba(230, 202, 97, 0.32);
+}
+
+.harbor-ore {
+  --harbor-accent: #bcc4d4;
+  --harbor-accent-soft: rgba(188, 196, 212, 0.32);
+}
+
+.harbor-link {
+  fill: none;
+  stroke: rgba(86, 64, 40, 0.76);
+  stroke-width: 5.4;
   stroke-linecap: round;
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.26));
+}
+
+.harbor-branch {
+  stroke: var(--harbor-accent);
+  opacity: 0.7;
+}
+
+.harbor-stem {
+  stroke-width: 4.6;
+  opacity: 0.92;
+}
+
+.harbor-node-ring {
+  fill: rgba(255, 248, 225, 0.18);
+  stroke: var(--harbor-accent);
+  stroke-width: 1.7;
+}
+
+.harbor-anchor {
+  fill: rgba(255, 247, 226, 0.95);
+  stroke: rgba(87, 63, 34, 0.8);
+  stroke-width: 1.4;
 }
 
 .harbor-plaque {
-  fill: rgba(44, 66, 96, 0.92);
-  stroke: rgba(255, 230, 182, 0.78);
-  stroke-width: 1.3;
-  filter: drop-shadow(0 3px 5px rgba(0, 0, 0, 0.24));
+  fill: var(--harbor-plaque-fill);
+  stroke: rgba(255, 232, 190, 0.86);
+  stroke-width: 1.5;
+  filter:
+    drop-shadow(0 4px 7px rgba(0, 0, 0, 0.28))
+    drop-shadow(0 0 0.8px var(--harbor-accent-soft));
 }
 
-.harbor-label {
+.harbor-badge {
+  fill: rgba(24, 37, 54, 0.97);
+  stroke: var(--harbor-accent);
+  stroke-width: 2;
+}
+
+.harbor-icon {
+  stroke: rgba(255, 247, 223, 0.88);
+  stroke-width: 1.4;
+  fill: var(--harbor-accent);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+.harbor-title,
+.harbor-rate {
   text-anchor: middle;
-  dominant-baseline: middle;
   fill: #fff2cf;
-  font-size: 11px;
+}
+
+.harbor-title {
+  font-size: 8.5px;
   font-weight: 800;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.14em;
+}
+
+.harbor-rate {
+  fill: white;
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
 }
 
 .edge {

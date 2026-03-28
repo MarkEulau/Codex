@@ -127,6 +127,11 @@ const BOARD_RADIUS = 2;
 const EXTENSION_BOARD_ROWS = [3, 4, 5, 6, 5, 4, 3];
 const HEX_SIZE = 74;
 const BOARD_PADDING = 36;
+const HARBOR_CARD_WIDTH = 98;
+const HARBOR_CARD_HEIGHT = 40;
+const HARBOR_CARD_OFFSET = 74;
+const HARBOR_HUB_OFFSET = 18;
+const HARBOR_SAFE_MARGIN = 12;
 const SVG_NS = "http://www.w3.org/2000/svg";
 const ONLINE_MAX_PLAYERS = 6;
 const PAIRED_PLAYER_OFFSET = 3;
@@ -2075,6 +2080,10 @@ function clampTurnSeconds(raw) {
   return Math.min(600, Math.max(1, parsed));
 }
 
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
 function randomChoice(arr) {
   if (!arr || arr.length === 0) return null;
   return arr[Math.floor(Math.random() * arr.length)];
@@ -3590,10 +3599,155 @@ function appendResourceIcon(layer, tile) {
   layer.appendChild(g);
 }
 
-function harborLabel(harbor) {
+function capitalizeWord(word) {
+  if (!word) return "";
+  return word[0].toUpperCase() + word.slice(1);
+}
+
+function harborTitle(harbor) {
   if (!harbor) return "";
-  if (harbor.type === "generic") return "3:1";
-  return `${harbor.type[0].toUpperCase() + harbor.type.slice(1)} 2:1`;
+  if (harbor.type === "generic") return "ANY";
+  return capitalizeWord(harbor.type).toUpperCase();
+}
+
+function harborRateText(harbor) {
+  if (!harbor) return "";
+  return harbor.type === "generic" ? "3:1" : "2:1";
+}
+
+function appendHarborIconShapes(container, harborType) {
+  if (harborType === "generic") {
+    container.appendChild(el("path", { d: "M -7 -3 H 3 L 0 -6 M 3 -3 L 0 0", fill: "none" }));
+    container.appendChild(el("path", { d: "M 7 3 H -3 L 0 6 M -3 3 L 0 0", fill: "none" }));
+    return;
+  }
+  appendResourceIconShapes(container, harborType);
+}
+
+function appendHarbor(layer, harbor) {
+  const dx = Math.cos(harbor.angle || 0);
+  const dy = Math.sin(harbor.angle || 0);
+  const nodeA = state.nodes[harbor.nodes[0]];
+  const nodeB = state.nodes[harbor.nodes[1]];
+  if (!nodeA || !nodeB) return;
+
+  const nodeAX = sx(nodeA.x);
+  const nodeAY = sy(nodeA.y);
+  const nodeBX = sx(nodeB.x);
+  const nodeBY = sy(nodeB.y);
+  const hubX = sx(harbor.mx + dx * HARBOR_HUB_OFFSET);
+  const hubY = sy(harbor.my + dy * HARBOR_HUB_OFFSET);
+  const rawCardX = sx(harbor.mx + dx * HARBOR_CARD_OFFSET);
+  const rawCardY = sy(harbor.my + dy * HARBOR_CARD_OFFSET);
+  const cardX = clamp(
+    rawCardX,
+    HARBOR_SAFE_MARGIN + HARBOR_CARD_WIDTH / 2,
+    state.geometry.width - HARBOR_SAFE_MARGIN - HARBOR_CARD_WIDTH / 2
+  );
+  const cardY = clamp(
+    rawCardY,
+    HARBOR_SAFE_MARGIN + HARBOR_CARD_HEIGHT / 2,
+    state.geometry.height - HARBOR_SAFE_MARGIN - HARBOR_CARD_HEIGHT / 2
+  );
+
+  const harborGroup = el("g", {
+    class: `harbor harbor-${harbor.type}`,
+  });
+
+  for (const [x, y] of [
+    [nodeAX, nodeAY],
+    [nodeBX, nodeBY],
+  ]) {
+    harborGroup.appendChild(
+      el("circle", {
+        cx: x,
+        cy: y,
+        r: 8.6,
+        class: "harbor-node-ring",
+      })
+    );
+  }
+
+  for (const [x, y] of [
+    [nodeAX, nodeAY],
+    [nodeBX, nodeBY],
+  ]) {
+    harborGroup.appendChild(
+      el("line", {
+        x1: x,
+        y1: y,
+        x2: hubX,
+        y2: hubY,
+        class: "harbor-link harbor-branch",
+      })
+    );
+  }
+
+  harborGroup.appendChild(
+    el("line", {
+      x1: hubX,
+      y1: hubY,
+      x2: cardX,
+      y2: cardY,
+      class: "harbor-link harbor-stem",
+    })
+  );
+
+  harborGroup.appendChild(
+    el("circle", {
+      cx: hubX,
+      cy: hubY,
+      r: 4.8,
+      class: "harbor-anchor",
+    })
+  );
+
+  harborGroup.appendChild(
+    el("rect", {
+      x: cardX - HARBOR_CARD_WIDTH / 2,
+      y: cardY - HARBOR_CARD_HEIGHT / 2,
+      rx: 12,
+      ry: 12,
+      width: HARBOR_CARD_WIDTH,
+      height: HARBOR_CARD_HEIGHT,
+      class: "harbor-plaque",
+    })
+  );
+
+  const badgeX = cardX - HARBOR_CARD_WIDTH / 2 + 18;
+  harborGroup.appendChild(
+    el("circle", {
+      cx: badgeX,
+      cy: cardY,
+      r: 12.4,
+      class: "harbor-badge",
+    })
+  );
+
+  const icon = el("g", {
+    class: "harbor-icon",
+    transform: `translate(${badgeX} ${cardY}) scale(0.72)`,
+  });
+  appendHarborIconShapes(icon, harbor.type);
+  harborGroup.appendChild(icon);
+
+  const title = el("text", {
+    x: cardX + 10,
+    y: cardY - 5.5,
+    class: "harbor-title",
+  });
+  title.textContent = harborTitle(harbor);
+  harborGroup.appendChild(title);
+
+  const rate = el("text", {
+    x: cardX + 10,
+    y: cardY + 10.5,
+    class: "harbor-rate",
+  });
+  rate.textContent = harborRateText(harbor);
+  harborGroup.appendChild(rate);
+
+  layer.appendChild(harborGroup);
 }
 
 function isClickableNode(nodeIdx) {
@@ -3781,42 +3935,7 @@ function renderBoard() {
   const overlayLayer = el("g");
 
   for (const harbor of state.harbors) {
-    const dx = Math.cos(harbor.angle || 0);
-    const dy = Math.sin(harbor.angle || 0);
-    const anchorX = sx(harbor.mx);
-    const anchorY = sy(harbor.my);
-    const dockX = sx(harbor.mx + dx * 26);
-    const dockY = sy(harbor.my + dy * 26);
-    const labelX = sx(harbor.mx + dx * 62);
-    const labelY = sy(harbor.my + dy * 62);
-
-    const pier = el("line", {
-      x1: anchorX,
-      y1: anchorY,
-      x2: dockX,
-      y2: dockY,
-      class: "harbor-pier",
-    });
-    harborLayer.appendChild(pier);
-
-    const plaque = el("rect", {
-      x: labelX - 33,
-      y: labelY - 12,
-      rx: 9,
-      ry: 9,
-      width: 66,
-      height: 24,
-      class: "harbor-plaque",
-    });
-    harborLayer.appendChild(plaque);
-
-    const label = el("text", {
-      x: labelX,
-      y: labelY + 0.5,
-      class: `harbor-label harbor-${harbor.type}`,
-    });
-    label.textContent = harborLabel(harbor);
-    harborLayer.appendChild(label);
+    appendHarbor(harborLayer, harbor);
   }
 
   for (const tile of state.tiles) {
